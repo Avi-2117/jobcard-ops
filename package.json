@@ -1,0 +1,17 @@
+{
+  "name": "jobcard-ops",
+  "version": "1.0.0",
+  "description": "Contact Computers JobCard Ops - job management system",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "build": "npm install"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "mongodb": "^6.10.0"
+  }
+}

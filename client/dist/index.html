@@ -1,0 +1,2728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>Contact Computers — JobCard Ops</title>
+  <meta name="description" content="Job management, tasks, deliveries and fuel logging for Contact Computers" />
+  <meta name="theme-color" content="#2563eb" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="JobCard Ops" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <script>
+    tailwind.config = {
+
+      theme: {
+        extend: {
+          colors: {
+            brand: { 50:'#eff6ff',100:'#dbeafe',200:'#bfdbfe',300:'#93c5fd',400:'#60a5fa',500:'#3b82f6',600:'#2563eb',700:'#1d4ed8',800:'#1e40af',900:'#1e3a8a' }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { -webkit-tap-highlight-color: transparent; }
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    .safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+    .sig-canvas { touch-action: none; border: 2px dashed #93c5fd; border-radius: 8px; background: #fff; }
+    .status-open { background: #dbeafe; color: #1e40af; }
+    .status-in_progress { background: #fef3c7; color: #92400e; }
+    .status-closed { background: #d1fae5; color: #065f46; }
+    .status-pending { background: #e0e7ff; color: #3730a3; }
+    .status-completed { background: #d1fae5; color: #065f46; }
+    .priority-high { color: #dc2626; font-weight: 600; }
+    .priority-normal { color: #2563eb; }
+    .priority-low { color: #6b7280; }
+    .card { background: white; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); border: 1px solid #e5e7eb; }
+    .nav-active { background: #2563eb; color: white; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 0.5rem 1rem; border-radius: 8px; font-weight: 500; font-size: 0.875rem; transition: all .15s; }
+    .btn-primary { background: #2563eb; color: white; }
+    .btn-primary:hover { background: #1d4ed8; }
+    .btn-secondary { background: #f3f4f6; color: #374151; }
+    .btn-secondary:hover { background: #e5e7eb; }
+    .btn-danger { background: #fee2e2; color: #b91c1c; }
+    .btn-success { background: #d1fae5; color: #065f46; }
+    .input { width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 8px; font-size: 0.875rem; }
+    .input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.15); }
+    .label { display: block; font-size: 0.75rem; font-weight: 500; color: #4b5563; margin-bottom: 0.25rem; }
+    .modal-bg {
+      background: rgba(0,0,0,.45);
+      overscroll-behavior: none;
+      touch-action: none;
+      -webkit-overflow-scrolling: none;
+    }
+    .modal-panel {
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
+    }
+    body.modal-open {
+      overflow: hidden !important;
+      position: fixed !important;
+      width: 100% !important;
+      left: 0;
+      right: 0;
+      touch-action: none;
+    }
+    html.modal-open {
+      overflow: hidden !important;
+    }
+    #calendar-grid .day-cell { min-height: 80px; }
+    .task-chip { font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; margin: 1px 0; cursor: grab; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .spinner { border: 2px solid #e5e7eb; border-top-color: #2563eb; border-radius: 50%; width: 24px; height: 24px; animation: spin .6s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .toast { position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%); z-index: 100; padding: 10px 20px; border-radius: 8px; color: white; font-size: 0.875rem; box-shadow: 0 4px 12px rgba(0,0,0,.15); }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen">
+  <div id="app"></div>
+  <div id="toast" class="toast hidden"></div>
+
+  <script>
+    const API = '';
+    let state = {
+      user: null,
+      token: localStorage.getItem('jc_token') || null,
+      view: 'dashboard',
+      data: {},
+      loading: false,
+      modal: null,
+      calendarMonth: new Date(),
+      fuelMonth: new Date().toISOString().slice(0, 7),
+      filters: {},
+      selectedJob: null
+    };
+
+    // ---------- API helper ----------
+    async function api(path, opts = {}) {
+      const headers = { ...(opts.headers || {}) };
+      if (state.token) headers['Authorization'] = 'Bearer ' + state.token;
+      if (opts.body && typeof opts.body === 'object' && !(opts.body instanceof FormData)) {
+        headers['Content-Type'] = 'application/json';
+        opts.body = JSON.stringify(opts.body);
+      }
+      const res = await fetch(API + path, { ...opts, headers });
+      if (res.status === 401) {
+        logout(false);
+        throw new Error('Session expired');
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Request failed');
+      return data;
+    }
+
+    function toast(msg, type = 'info') {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className = 'toast ' + (type === 'error' ? 'bg-red-600' : type === 'success' ? 'bg-emerald-600' : 'bg-slate-800');
+      el.classList.remove('hidden');
+      setTimeout(() => el.classList.add('hidden'), 2800);
+    }
+
+    function logout(call = true) {
+      state.token = null;
+      state.user = null;
+      localStorage.removeItem('jc_token');
+      localStorage.removeItem('jc_user');
+      render();
+    }
+
+    async function init() {
+      if (state.token) {
+        try {
+          state.user = await api('/api/auth/me');
+          localStorage.setItem('jc_user', JSON.stringify(state.user));
+        } catch {
+          logout(false);
+        }
+      }
+      render();
+    }
+
+    // ---------- RENDER ----------
+    function render() {
+      const app = document.getElementById('app');
+      if (!state.user) {
+        app.innerHTML = renderLogin();
+        bindLogin();
+        setModalScrollLock(false);
+        return;
+      }
+      app.innerHTML = `
+        <div class="flex flex-col min-h-screen">
+          ${renderHeader()}
+          <main class="flex-1 p-3 sm:p-4 max-w-6xl mx-auto w-full pb-36">
+            ${renderView()}
+          </main>
+
+          ${renderBottomNav()}
+        </div>
+        ${state.modal ? renderModal() : ''}
+      `;
+      bindGlobal();
+      setModalScrollLock(!!state.modal);
+    }
+
+    function renderLogin() {
+      return `
+        <div class="min-h-screen flex flex-col items-center justify-center bg-gradient-to-b from-brand-50 to-white p-4">
+          <div class="w-full max-w-sm">
+            <div class="text-center mb-8">
+              <img src="/logo.png" alt="Contact Computers" class="mx-auto h-24 object-contain mb-4 drop-shadow-sm" />
+              <p class="text-brand-700 font-medium text-sm tracking-wide">Job Management System</p>
+            </div>
+            <div class="card p-6">
+              <h1 class="text-lg font-semibold text-center mb-5 text-slate-800">Sign in</h1>
+              <form id="login-form" class="space-y-4">
+                <div>
+                  <label class="label">Username</label>
+                  <input type="text" name="username" class="input" autocomplete="username" required autofocus />
+                </div>
+                <div>
+                  <label class="label">Password</label>
+                  <div class="relative">
+                    <input type="password" name="password" id="login-password" class="input pr-16" autocomplete="current-password" required />
+                    <button type="button" onclick="toggleLoginPassword()" class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-brand-600">Show</button>
+                  </div>
+                </div>
+                <button type="submit" class="btn btn-primary w-full py-2.5">Sign in</button>
+              </form>
+              <p id="login-error" class="text-red-600 text-sm mt-3 text-center hidden"></p>
+            </div>
+            <p class="text-center text-xs text-slate-400 mt-6">© Contact Computers — How I.T's Done</p>
+          </div>
+        </div>
+      `;
+    }
+
+    function bindLogin() {
+      document.getElementById('login-form').onsubmit = async (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        const err = document.getElementById('login-error');
+        err.classList.add('hidden');
+        try {
+          const data = await api('/api/auth/login', {
+            method: 'POST',
+            body: { username: fd.get('username'), password: fd.get('password') }
+          });
+          state.token = data.token;
+          state.user = data.user;
+          localStorage.setItem('jc_token', data.token);
+          localStorage.setItem('jc_user', JSON.stringify(data.user));
+          state.view = 'dashboard';
+          toast('Welcome, ' + data.user.name, 'success');
+          render();
+        } catch (ex) {
+          err.textContent = ex.message;
+          err.classList.remove('hidden');
+        }
+      };
+    }
+
+    function renderHeader() {
+      const titles = {
+        dashboard: 'Dashboard',
+        jobs: 'Job Cards',
+        jobDetail: 'Job Details',
+        calendar: 'Calendar',
+        customers: 'Customers',
+        deliveries: 'Deliveries & Collections',
+        fuel: 'Fuel Log',
+        users: 'Users & Roles',
+        audit: 'Audit Trail'
+      };
+      return `
+        <header class="bg-white border-b border-slate-200 sticky top-0 z-30">
+          <div class="max-w-6xl mx-auto px-3 sm:px-4 h-14 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <img src="/logo.png" alt="" class="h-8 object-contain hidden sm:block" />
+              <span class="font-semibold text-brand-700 text-sm sm:text-base">${titles[state.view] || 'JobCard Ops'}</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-slate-500 hidden sm:inline">${state.user.name} · ${state.user.role}</span>
+              <button onclick="logout()" class="btn btn-secondary text-xs py-1.5">Logout</button>
+            </div>
+          </div>
+        </header>
+      `;
+    }
+
+    function renderBottomNav() {
+      const items = [
+        { id: 'dashboard', label: 'Home', icon: '⌂' },
+        { id: 'jobs', label: 'Jobs', icon: '📋' },
+        { id: 'calendar', label: 'Calendar', icon: '📅' },
+        { id: 'fuel', label: 'Fuel', icon: '⛽' },
+        { id: 'more', label: 'More', icon: '☰' }
+      ];
+      return `
+        <nav class="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 safe-bottom z-40">
+          <div class="max-w-6xl mx-auto flex justify-around">
+            ${items.map(i => `
+              <button onclick="navTo('${i.id}')" class="flex-1 py-2 flex flex-col items-center gap-0.5 text-xs ${state.view === i.id || (i.id==='more' && ['deliveries','customers','users','audit'].includes(state.view)) ? 'text-brand-600 font-semibold' : 'text-slate-500'}">
+                <span class="text-lg leading-none">${i.icon}</span>
+                ${i.label}
+              </button>
+            `).join('')}
+          </div>
+        </nav>
+      `;
+    }
+
+    window.navTo = (id) => {
+      if (id === 'more') {
+        state.modal = { type: 'more' };
+      } else {
+        state.view = id;
+        state.selectedJob = null;
+        state.modal = null;
+      }
+      render();
+      if (['dashboard','jobs','calendar','customers','deliveries','fuel','users','audit'].includes(id)) loadViewData();
+    };
+
+    function renderView() {
+      switch (state.view) {
+        case 'dashboard': return renderDashboard();
+        case 'jobs': return renderJobs();
+        case 'jobDetail': return renderJobDetail();
+        case 'calendar': return renderCalendar();
+        case 'customers': return renderCustomers();
+        case 'deliveries': return renderDeliveries();
+        case 'fuel': return renderFuel();
+        case 'users': return renderUsers();
+        case 'audit': return renderAudit();
+        default: return renderDashboard();
+      }
+    }
+
+    // ---------- DASHBOARD ----------
+    function renderDashboard() {
+      const d = state.data.dashboard || {};
+      return `
+        <div class="space-y-4">
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            ${statCard('Open Jobs', d.openJobs ?? '—', 'brand')}
+            ${statCard('Overdue Tasks', d.overdueTasks ?? '—', 'red')}
+            ${statCard('Pending Tasks', d.pendingTasks ?? '—', 'amber')}
+            ${statCard('Closed Jobs', d.closedJobs ?? '—', 'emerald')}
+            ${statCard('Deliveries', d.deliveries ?? '—', 'sky')}
+            ${statCard('Fuel Spend', 'R ' + (d.fuelSpend ?? 0).toFixed(0), 'slate')}
+          </div>
+          <div class="card p-4">
+            <div class="flex items-center justify-between mb-3">
+              <h2 class="font-semibold text-sm">Recent Job Cards</h2>
+              <button onclick="navTo('jobs')" class="text-brand-600 text-xs font-medium">View all</button>
+            </div>
+            <div class="space-y-2">
+              ${(d.recentJobs || []).length === 0 ? '<p class="text-sm text-slate-400">No jobs yet</p>' :
+                d.recentJobs.map(j => `
+                  <button onclick="openJob('${j.id}')" class="w-full text-left flex items-center justify-between p-2 rounded-lg hover:bg-slate-50 border border-transparent hover:border-slate-100">
+                    <div>
+                      <span class="font-medium text-sm">${j.jobNumber}</span>
+                      <span class="text-xs text-slate-500 ml-2">${j.customerName || j.siteLocation || ''}</span>
+                    </div>
+                    <span class="text-xs px-2 py-0.5 rounded-full status-${j.status}">${j.status.replace('_',' ')}</span>
+                  </button>
+                `).join('')}
+            </div>
+          </div>
+          <div class="flex gap-2">
+            <button onclick="openNewJob()" class="btn btn-primary flex-1">+ New Job Card</button>
+            <button onclick="navTo('calendar')" class="btn btn-secondary flex-1">Calendar</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function statCard(label, value, color) {
+      const colors = { brand:'text-brand-700 bg-brand-50', red:'text-red-700 bg-red-50', amber:'text-amber-700 bg-amber-50', emerald:'text-emerald-700 bg-emerald-50', sky:'text-sky-700 bg-sky-50', slate:'text-slate-700 bg-slate-100' };
+      return `<div class="card p-3 ${colors[color] || ''}"><div class="text-2xl font-bold">${value}</div><div class="text-xs opacity-80 mt-0.5">${label}</div></div>`;
+    }
+
+    // ---------- JOBS ----------
+    function renderJobs() {
+      const jobs = state.data.jobs || [];
+      const filter = state.filters.jobStatus || '';
+      const filtered = filter ? jobs.filter(j => j.status === filter) : jobs;
+      return `
+        <div class="space-y-3">
+          <div class="flex flex-wrap gap-2 items-center">
+            <input type="search" id="job-search" placeholder="Search jobs..." class="input flex-1 min-w-[140px]" value="${state.filters.jobQ || ''}" />
+            <select id="job-status-filter" class="input w-auto">
+              <option value="">All status</option>
+              <option value="open" ${filter==='open'?'selected':''}>Open</option>
+              <option value="in_progress" ${filter==='in_progress'?'selected':''}>In Progress</option>
+              <option value="closed" ${filter==='closed'?'selected':''}>Closed</option>
+            </select>
+            <button onclick="openNewJob()" class="btn btn-primary">+ New</button>
+          </div>
+          <div class="space-y-2" id="jobs-list">
+            ${filtered.length === 0 ? '<p class="text-sm text-slate-400 text-center py-8">No job cards found</p>' :
+              filtered.map(j => `
+                <button onclick="openJob('${j.id}')" class="card p-3 w-full text-left hover:border-brand-300 transition">
+                  <div class="flex justify-between items-start">
+                    <div>
+                      <div class="font-semibold text-brand-800">${j.jobNumber}</div>
+                      <div class="text-sm text-slate-600 mt-0.5">${j.customerName || 'No customer'} · ${j.siteLocation || 'No site'}</div>
+                      <div class="text-xs text-slate-400 mt-1 truncate">${j.description || ''}</div>
+                    </div>
+                    <div class="text-right shrink-0 ml-2">
+                      <span class="text-xs px-2 py-0.5 rounded-full status-${j.status}">${j.status.replace('_',' ')}</span>
+                      <div class="text-xs mt-1 priority-${j.priority}">${j.priority}</div>
+                    </div>
+                  </div>
+                </button>
+              `).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    window.openNewJob = async () => {
+      try {
+        if (!state.data.customers) state.data.customers = await api('/api/customers');
+        state.data.vehicles = await api('/api/vehicles');
+        state.data.staff = await api('/api/staff');
+      } catch (_) {}
+      state.modal = { type: 'newJob' };
+      render();
+    };
+
+        window.openJob = async (id) => {
+      try {
+        state.selectedJob = await api('/api/jobs/' + id);
+        try {
+          state.data.vehicles = await api('/api/vehicles');
+          state.data.staff = await api('/api/staff');
+        } catch (_) {}
+        state.view = 'jobDetail';
+        render();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+
+    function splitTime(t) {
+      if (!t || typeof t !== 'string') return { h: '', m: '' };
+      const p = t.split(':');
+      return { h: p[0] || '', m: (p[1] || '').slice(0, 2) };
+    }
+    function timeSelectHtml(prefix, value) {
+      const { h, m } = splitTime(value);
+      const hours = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+      // Full 1-minute accuracy 00–59
+      const mins = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'));
+      const hOpts = '<option value="">HH</option>' + hours.map(x =>
+        `<option value="${x}" ${h === x ? 'selected' : ''}>${x}</option>`).join('');
+      const mm = (m || '').padStart(2, '0');
+      const mOpts = '<option value="">MM</option>' + mins.map(x =>
+        `<option value="${x}" ${mm === x ? 'selected' : ''}>${x}</option>`).join('');
+      return `
+        <div class="flex gap-1 items-center">
+          <select name="${prefix}H" class="input flex-1" onchange="syncScopeTimesFromSelects()">${hOpts}</select>
+          <span class="font-bold text-slate-400">:</span>
+          <select name="${prefix}M" class="input flex-1" onchange="syncScopeTimesFromSelects()">${mOpts}</select>
+        </div>`;
+    }
+
+    function hoursSpentFromTimes(timeIn, timeOut) {
+      if (!timeIn || !timeOut) return null;
+      const parse = (s) => {
+        const p = String(s).split(':');
+        if (p.length < 2) return null;
+        const h = Number(p[0]), m = Number(p[1]);
+        if (Number.isNaN(h) || Number.isNaN(m)) return null;
+        return h * 60 + m;
+      };
+      let a = parse(timeIn), b = parse(timeOut);
+      if (a == null || b == null) return null;
+      // overnight: e.g. 22:00 -> 01:30
+      if (b < a) b += 24 * 60;
+      const mins = b - a;
+      const hours = Math.floor(mins / 60);
+      const minutes = mins % 60;
+      const decimal = Math.round((mins / 60) * 100) / 100;
+      return { mins, hours, minutes, decimal, label: hours + 'h ' + String(minutes).padStart(2, '0') + 'm (' + decimal + ' hrs)' };
+    }
+
+    async function ensureJobLookups() {
+      try {
+        if (!state.data.vehicles) state.data.vehicles = await api('/api/vehicles');
+        if (!state.data.staff) state.data.staff = await api('/api/staff');
+      } catch (_) {}
+    }
+
+        function renderJobDetail() {
+      const j = state.selectedJob;
+      if (!j) return '<p>Loading...</p>';
+      const canClose = j.status !== 'closed';
+      return `
+        <div class="space-y-4">
+          <div class="flex items-center justify-between gap-2 flex-wrap">
+            <button onclick="state.view='jobs';render()" class="text-brand-600 text-sm">← Back to jobs</button>
+            <div class="flex gap-2">
+              <button type="button" onclick="exportJobPdf()" class="btn btn-primary text-xs py-2 px-3">Export PDF</button>
+              ${(state.user && ['admin','office','field'].includes(state.user.role)) ? `
+                <button type="button" onclick="deleteJob()" class="btn btn-danger text-xs py-2 px-3">Delete</button>
+              ` : ''}
+            </div>
+          </div>
+          <div class="card p-4">
+            <div class="flex justify-between items-center mb-3">
+              <div>
+                <h2 class="text-xl font-bold text-brand-800">${j.jobNumber}</h2>
+                <span class="text-xs px-2 py-0.5 rounded-full status-${j.status}">${j.status.replace('_',' ')}</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="text-sm priority-${j.priority}">${j.priority} priority</span>
+                ${canClose ? `<button type="button" onclick="state.modal={type:'editJobDetails',id:'${j.id}'};render()" class="btn btn-primary text-xs py-1">Edit details</button>` : ''}
+              </div>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
+              <div><span class="text-slate-500">Customer:</span> ${j.customerName || '—'}</div>
+              <div><span class="text-slate-500">Site:</span> ${j.siteLocation || '—'}</div>
+              <div><span class="text-slate-500">Start:</span> ${j.startDate || '—'}</div>
+              <div><span class="text-slate-500">Complete:</span> ${j.completionDate || '—'}</div>
+              <div><span class="text-slate-500">Vehicle:</span> ${j.vehicle || '—'}</div>
+              <div><span class="text-slate-500">Technician:</span> ${j.technician || '—'}</div>
+            </div>
+            <p class="text-sm mt-3 text-slate-700">${j.description || ''}</p>
+            ${j.notes ? `<p class="text-xs text-slate-500 mt-2">Notes: ${j.notes}</p>` : ''}
+            <div class="flex flex-wrap gap-2 mt-3">
+              ${canClose ? `<button type="button" onclick="state.modal={type:'editJobMeta',id:'${j.id}'};render()" class="btn btn-secondary text-xs">Vehicle / technician</button>` : ''}
+              ${!canClose && (state.user && ['admin','office','field'].includes(state.user.role)) ? `<button type="button" onclick="reopenJob()" class="btn btn-primary text-xs">Reopen job card</button>` : ''}
+            </div>
+          </div>
+
+          <!-- Job Scope -->
+          <div class="card p-4">
+            <div class="flex justify-between items-center mb-2">
+              <h3 class="font-semibold text-sm">Job Scope</h3>
+              ${canClose ? `<button type="button" onclick="state.modal={type:'editJobScope',id:'${j.id}'};render()" class="btn btn-primary text-xs py-1">Edit Scope</button>` : ''}
+            </div>
+            <div class="space-y-2 text-sm">
+              <div><span class="text-slate-500">Work carried out:</span><div class="mt-0.5 whitespace-pre-wrap">${j.workCarriedOut || '—'}</div></div>
+              <div class="grid grid-cols-2 gap-2">
+                <div><span class="text-slate-500">Time in:</span> ${j.timeIn || '—'}</div>
+                <div><span class="text-slate-500">Time out:</span> ${j.timeOut || '—'}</div>
+              </div>
+              <div><span class="text-slate-500">Time spent:</span> <span class="font-semibold text-brand-700">${(hoursSpentFromTimes(j.timeIn, j.timeOut) || {}).label || '—'}</span></div>
+              <div><span class="text-slate-500">Equipment / Spares:</span><div class="mt-0.5 whitespace-pre-wrap">${j.equipmentSpares || '—'}</div></div>
+              <div><span class="text-slate-500">Comments:</span><div class="mt-0.5 whitespace-pre-wrap">${j.scopeComments || '—'}</div></div>
+              <div class="flex flex-wrap gap-3 items-center">
+                <div><span class="text-slate-500">Rating:</span> ${j.jobRating ? ('★'.repeat(Number(j.jobRating)) + '☆'.repeat(5-Number(j.jobRating)) + ' (' + j.jobRating + '/5)') : '—'}</div>
+                <div><span class="text-slate-500">Invoice:</span> ${j.hasInvoice ? ('<span class="text-emerald-700 font-medium">Yes</span>' + (j.invoiceNumber ? ' · #' + j.invoiceNumber : '')) : '<span class="text-slate-400">No</span>'}</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tasks -->
+          <div class="card p-4">
+            <div class="flex justify-between items-center mb-2">
+              <h3 class="font-semibold text-sm">Tasks</h3>
+              ${canClose ? `<button onclick="state.modal={type:'newTask',jobId:'${j.id}'};render()" class="btn btn-primary text-xs py-1">+ Task</button>` : ''}
+            </div>
+            <div class="space-y-2">
+              ${(j.tasks || []).length === 0 ? '<p class="text-xs text-slate-400">No tasks yet</p>' :
+                j.tasks.map(t => `
+                  <div class="flex items-center justify-between p-2 bg-slate-50 rounded-lg">
+                    <div class="min-w-0">
+                      <div class="text-sm font-medium truncate">${t.title}</div>
+                      <div class="text-xs text-slate-500">${t.dueDate || ''} ${t.startTime || ''}</div>
+                    </div>
+                    <select onchange="updateTaskStatus('${t.id}', this.value)" class="text-xs input w-auto py-1" ${j.status==='closed'?'disabled':''}>
+                      <option value="pending" ${t.status==='pending'?'selected':''}>Pending</option>
+                      <option value="in_progress" ${t.status==='in_progress'?'selected':''}>In Progress</option>
+                      <option value="completed" ${t.status==='completed'?'selected':''}>Completed</option>
+                    </select>
+                  </div>
+                `).join('')}
+            </div>
+          </div>
+
+          <!-- Photos -->
+          <div class="card p-4">
+            <div class="flex justify-between items-center mb-2">
+              <h3 class="font-semibold text-sm">Photos (${(j.photos||[]).length})</h3>
+              ${canClose ? (
+                '<div class="flex gap-1 flex-wrap justify-end">' +
+                  '<button type="button" class="btn btn-secondary text-xs py-1.5 px-2" onclick="document.getElementById(\'job-photo-camera\').click()">Camera</button>' +
+                  '<button type="button" class="btn btn-secondary text-xs py-1.5 px-2" onclick="document.getElementById(\'job-photo-gallery\').click()">Gallery</button>' +
+                  '<input id="job-photo-camera" type="file" accept="image/*" capture="environment" class="hidden" onchange="uploadJobPhoto(event)" />' +
+                  '<input id="job-photo-gallery" type="file" accept="image/*" class="hidden" onchange="uploadJobPhoto(event)" />' +
+                '</div>'
+              ) : ''}
+            </div>
+            <div class="grid grid-cols-3 gap-2">
+              ${(j.photos||[]).map(p => `
+                <div class="relative group">
+                  <img src="${p.data || p.path}" class="w-full h-24 object-cover rounded-lg border bg-white" loading="lazy" />
+                  <div class="text-[10px] text-slate-400 mt-0.5">${new Date(p.uploadedAt).toLocaleString()}</div>
+                  ${canClose ? `<button type="button" onclick="event.stopPropagation();deleteJobPhoto('${p.id}')" class="absolute top-1 right-1 bg-red-600 text-white text-[10px] leading-none px-1.5 py-1 rounded shadow" title="Remove photo">✕</button>` : ''}
+                </div>
+              `).join('') || '<p class="text-xs text-slate-400 col-span-3">No photos</p>'}
+            </div>
+          </div>
+
+          <!-- Signature -->
+          <div class="card p-4">
+            <h3 class="font-semibold text-sm mb-2">Customer Sign-Off</h3>
+            ${j.signature ? `
+              <img src="${j.signature.data || j.signature.path}" class="border rounded-lg max-h-32 bg-white" />
+              <p class="text-xs text-slate-500 mt-1">Signed ${new Date(j.signature.signedAt).toLocaleString()} by ${j.signature.signedBy}</p>
+            ` : canClose ? `
+              <p class="text-xs text-slate-500 mb-2">Hand the device to the customer to sign.</p>
+              <button onclick="openSignModal()" class="btn btn-primary w-full py-3">✍️ Get Customer Signature</button>
+            ` : '<p class="text-xs text-slate-400">No signature</p>'}
+          </div>
+
+          <div class="flex gap-2">
+            <button onclick="exportJobPdf()" class="btn btn-primary flex-1 py-3">Export PDF</button>
+            ${(state.user.role === 'admin' || state.user.role === 'office') ? `
+              <button onclick="deleteJob()" class="btn btn-danger flex-1 py-3">Delete Job</button>
+            ` : ''}
+          </div>
+
+          ${canClose ? `
+            <button onclick="closeJob()" class="btn btn-success w-full py-3">Close Job Card</button>
+            <p class="text-xs text-center text-slate-400 pb-4">Requires: all tasks completed · customer signature</p>
+          ` : `
+            <div class="text-center text-emerald-700 font-medium py-2 pb-4">✓ Job Closed</div>
+          `}
+        </div>
+      `;
+    }
+
+
+
+    // ---------- CALENDAR ----------
+    function renderCalendar() {
+      const tasks = state.data.tasks || [];
+      const month = state.calendarMonth;
+      const year = month.getFullYear();
+      const m = month.getMonth();
+      const first = new Date(year, m, 1);
+      const startDay = first.getDay();
+      const daysInMonth = new Date(year, m + 1, 0).getDate();
+      const today = new Date().toISOString().slice(0, 10);
+      const monthName = month.toLocaleString('default', { month: 'long', year: 'numeric' });
+
+      let cells = '';
+      for (let i = 0; i < startDay; i++) cells += '<div class="day-cell bg-slate-50"></div>';
+      for (let d = 1; d <= daysInMonth; d++) {
+        const dateStr = `${year}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        const dayTasks = tasks.filter(t => t.dueDate === dateStr);
+        cells += `
+          <div class="day-cell border border-slate-100 p-1 ${dateStr===today?'bg-brand-50':''}" data-date="${dateStr}"
+               ondragover="event.preventDefault()" ondrop="dropTask(event, '${dateStr}')">
+            <div class="text-xs font-medium ${dateStr===today?'text-brand-700':''}">${d}</div>
+            ${dayTasks.map(t => `
+              <div class="task-chip bg-brand-100 text-brand-800" draggable="true"
+                   ondragstart="dragTask(event, '${t.id}')" onclick="openJob('${t.jobId}')"
+                   title="${t.title}">
+                ${t.jobNumber || ''} ${t.title}
+              </div>
+            `).join('')}
+          </div>`;
+      }
+
+      return `
+        <div class="space-y-3">
+          <div class="flex items-center justify-between">
+            <button onclick="calNav(-1)" class="btn btn-secondary text-sm">‹</button>
+            <h2 class="font-semibold">${monthName}</h2>
+            <button onclick="calNav(1)" class="btn btn-secondary text-sm">›</button>
+          </div>
+          <div class="grid grid-cols-7 gap-px bg-slate-200 rounded-lg overflow-hidden text-center text-xs font-medium text-slate-500">
+            ${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => `<div class="bg-slate-100 py-1">${d}</div>`).join('')}
+          </div>
+          <div id="calendar-grid" class="grid grid-cols-7 gap-px bg-slate-200 rounded-lg overflow-hidden bg-white">
+            ${cells}
+          </div>
+          <p class="text-xs text-slate-400 text-center">Drag tasks to reschedule · Tap to open job</p>
+        </div>
+      `;
+    }
+
+    window.calNav = (dir) => {
+      state.calendarMonth = new Date(state.calendarMonth.getFullYear(), state.calendarMonth.getMonth() + dir, 1);
+      render();
+    };
+    window.dragTask = (e, id) => { e.dataTransfer.setData('taskId', id); };
+    window.dropTask = async (e, date) => {
+      e.preventDefault();
+      const id = e.dataTransfer.getData('taskId');
+      if (!id) return;
+      try {
+        await api('/api/tasks/' + id, { method: 'PUT', body: { dueDate: date } });
+        toast('Task moved to ' + date, 'success');
+        loadViewData();
+      } catch (err) { toast(err.message, 'error'); }
+    };
+
+    // ---------- CUSTOMERS ----------
+    function renderCustomers() {
+      const list = state.data.customers || [];
+      return `
+        <div class="space-y-3">
+          <div class="flex gap-2">
+            <input type="search" id="cust-search" placeholder="Search customers..." class="input flex-1" value="${state.filters.custQ || ''}" />
+            <button onclick="state.modal={type:'newCustomer'};render()" class="btn btn-primary">+ Add</button>
+            <button onclick="state.modal={type:'importCustomers'};render()" class="btn btn-secondary text-xs">Import</button>
+          </div>
+          <div class="space-y-2">
+            ${list.length === 0 ? '<p class="text-sm text-slate-400 text-center py-8">No customers</p>' :
+              list.map(c => `
+                <div class="card p-3">
+                  <div class="flex justify-between">
+                    <div>
+                      <div class="font-semibold">${c.companyName}</div>
+                      <div class="text-sm text-slate-600">${c.contactPerson || ''} · ${c.phone || ''}</div>
+                      <div class="text-xs text-slate-400">${c.email || ''} · ${c.address || ''}</div>
+                    </div>
+                    <button onclick="state.modal={type:'editCustomer',data:${JSON.stringify(c).replace(/"/g,'&quot;')}};render()" class="btn btn-secondary text-xs self-start">Edit</button>
+                  </div>
+                </div>
+              `).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    // ---------- DELIVERIES ----------
+    function esc(s) {
+      return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    // value for <input type="datetime-local"> in the user's LOCAL time
+    function toLocalInput(iso) {
+      const d = iso ? new Date(iso) : new Date();
+      if (isNaN(d)) return '';
+      const p = n => String(n).padStart(2, '0');
+      return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes());
+    }
+    function findDelivery(id) {
+      return (state.data.deliveries || []).find(x => x.id === id);
+    }
+
+    function renderDeliveries() {
+      const list = state.data.deliveries || [];
+      return `
+        <div class="space-y-3">
+          <div class="flex gap-2">
+            <button onclick="state.modal={type:'newDelivery',dtype:'delivery'};render()" class="btn btn-primary flex-1">+ Delivery</button>
+            <button onclick="state.modal={type:'newDelivery',dtype:'collection'};render()" class="btn btn-secondary flex-1">+ Collection</button>
+          </div>
+          <div class="space-y-2">
+            ${list.length === 0 ? '<p class="text-sm text-slate-400 text-center py-8">No records</p>' :
+              list.map(d => `
+                <div class="card p-3 cursor-pointer active:bg-slate-50" onclick="state.modal={type:'viewDelivery',id:'${d.id}'};render()">
+                  <div class="flex justify-between items-start">
+                    <div>
+                      <span class="text-xs font-medium px-2 py-0.5 rounded ${d.type==='delivery'?'bg-sky-100 text-sky-800':'bg-violet-100 text-violet-800'}">${d.type}</span>
+                      <span class="text-xs text-slate-400 ml-1">${esc(d.ref)}</span>
+                      <div class="font-medium text-sm mt-1">${esc(d.itemDetails) || '—'}</div>
+                      <div class="text-xs text-slate-500">${esc(d.customerName || d.site || '')} · ${esc(d.driver || '')}</div>
+                      <div class="text-xs text-slate-400">${new Date(d.dateTime).toLocaleString()}</div>
+                      <div class="text-xs text-brand-600 mt-1">View · Edit · PDF ›</div>
+                    </div>
+                    <span class="text-xs px-2 py-0.5 rounded-full status-${d.status === 'completed' ? 'completed' : 'pending'}">${d.status}</span>
+                  </div>
+                </div>
+              `).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    // ---------- FUEL ----------
+    function findFuel(id) {
+      return (state.data.fuel || []).find(x => x.id === id);
+    }
+
+    function renderFuel() {
+      const list = state.data.fuel || [];
+      const now = new Date();
+      if (!state.fuelMonth) state.fuelMonth = now.toISOString().slice(0, 7);
+      const [selY, selM] = String(state.fuelMonth).split('-').map(Number);
+      const selDate = new Date(selY, (selM || 1) - 1, 1);
+      const monthName = selDate.toLocaleString(undefined, { month: 'short', year: 'numeric' });
+      const isCurrent = selY === now.getFullYear() && (selM - 1) === now.getMonth();
+
+      const totalAmt = list.reduce((s, f) => s + (Number(f.amount) || 0), 0);
+      const totalL = list.reduce((s, f) => s + (Number(f.litres) || 0), 0);
+      const monthList = list.filter(f => {
+        const d = new Date(f.dateTime);
+        return d.getFullYear() === selY && (d.getMonth() + 1) === selM;
+      });
+      const monthAmt = monthList.reduce((s, f) => s + (Number(f.amount) || 0), 0);
+      const monthL = monthList.reduce((s, f) => s + (Number(f.litres) || 0), 0);
+      const avgPrice = totalL > 0 ? totalAmt / totalL : null;
+      const monthAvg = monthL > 0 ? monthAmt / monthL : null;
+
+      const odos = monthList.map(f => Number(f.odometer)).filter(n => !Number.isNaN(n) && n > 0).sort((a, b) => a - b);
+      const odoSpan = odos.length >= 2 ? (odos[odos.length - 1] - odos[0]) : null;
+      const last = monthList[0] || list[0];
+
+      const payMap = {};
+      monthList.forEach(f => {
+        const k = f.paymentMethod || 'Unspecified';
+        payMap[k] = (payMap[k] || 0) + (Number(f.amount) || 0);
+      });
+      const paySummary = Object.keys(payMap).length
+        ? Object.entries(payMap).map(([k, v]) => k + ': R ' + v.toFixed(0)).join(' · ')
+        : '—';
+
+      // Months that have data, plus current
+      const monthSet = new Set();
+      monthSet.add(now.toISOString().slice(0, 7));
+      list.forEach(f => {
+        const d = new Date(f.dateTime);
+        if (!isNaN(d)) monthSet.add(d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'));
+      });
+      const monthOptions = [...monthSet].sort().reverse().map(key => {
+        const [yy, mm] = key.split('-').map(Number);
+        const label = new Date(yy, mm - 1, 1).toLocaleString(undefined, { month: 'long', year: 'numeric' });
+        return `<option value="${key}" ${key === state.fuelMonth ? 'selected' : ''}>${label}</option>`;
+      }).join('');
+
+      const tile = (label, value, sub) => `
+        <div class="card p-3 min-w-0">
+          <div class="text-[11px] uppercase tracking-wide text-slate-500">${label}</div>
+          <div class="text-lg font-bold text-brand-900 truncate">${value}</div>
+          ${sub ? `<div class="text-[11px] text-slate-400 mt-0.5 truncate">${sub}</div>` : ''}
+        </div>`;
+
+      return `
+        <div class="space-y-3">
+          <div class="card p-3 flex flex-wrap items-center gap-2">
+            <label class="text-sm font-medium text-slate-600">Month</label>
+            <select class="input flex-1 min-w-[160px]" onchange="setFuelMonth(this.value)">
+              ${monthOptions}
+            </select>
+            <button type="button" onclick="exportFuelMonthPdf(state.fuelMonth)" class="btn btn-secondary text-xs whitespace-nowrap">Download ${monthName} report</button>
+          </div>
+
+          <div class="grid grid-cols-2 gap-2">
+            ${tile(isCurrent ? 'This month' : monthName, 'R ' + monthAmt.toFixed(2), monthList.length + ' fill-up' + (monthList.length === 1 ? '' : 's'))}
+            ${tile('Month litres', (monthL ? monthL.toFixed(1) : '0') + ' L', monthAvg != null ? 'Avg R ' + monthAvg.toFixed(2) + '/L' : '—')}
+            ${tile('All time', 'R ' + totalAmt.toFixed(2), list.length + ' total entries')}
+            ${tile('All litres', (totalL ? totalL.toFixed(1) : '0') + ' L', avgPrice != null ? 'Avg R ' + avgPrice.toFixed(2) + '/L' : '—')}
+          </div>
+
+          <div class="card p-3 space-y-1.5 text-sm">
+            <div class="flex justify-between gap-2">
+              <span class="text-slate-500">Last fill-up${isCurrent ? '' : ' in month'}</span>
+              <span class="font-medium text-right">${last && monthList.length ? (new Date(last.dateTime).toLocaleDateString() + ' · R ' + (Number(last.amount) || 0).toFixed(2) + (last.litres != null ? ' · ' + last.litres + ' L' : '')) : '—'}</span>
+            </div>
+            <div class="flex justify-between gap-2">
+              <span class="text-slate-500">Last vehicle</span>
+              <span class="font-medium text-right">${last && monthList.length ? esc(last.vehicle || '—') + (last.station ? ' @ ' + esc(last.station) : '') : '—'}</span>
+            </div>
+            <div class="flex justify-between gap-2">
+              <span class="text-slate-500">Odometer range</span>
+              <span class="font-medium text-right">${odoSpan != null ? odos[0] + ' → ' + odos[odos.length - 1] + ' km (' + odoSpan + ' km)' : (odos.length === 1 ? odos[0] + ' km' : '—')}</span>
+            </div>
+            <div class="flex justify-between gap-2">
+              <span class="text-slate-500">Paid this month</span>
+              <span class="font-medium text-right text-xs sm:text-sm">${esc(paySummary)}</span>
+            </div>
+          </div>
+
+          <div class="flex gap-2">
+            <button type="button" onclick="state.modal={type:'newFuel'};render()" class="btn btn-primary flex-1">+ Log Fuel</button>
+            <button type="button" onclick="exportFuelMonthPdf(state.fuelMonth)" class="btn btn-secondary flex-1 text-xs">Download report</button>
+          </div>
+
+          <div class="text-xs font-semibold text-slate-500 uppercase tracking-wide px-0.5">Entries for ${monthName}</div>
+          <div class="space-y-2">
+            ${monthList.length === 0 ? '<p class="text-sm text-slate-400 text-center py-8">No fuel logs for this month</p>' :
+              monthList.map(f => `
+                <div class="card p-3 cursor-pointer active:bg-slate-50" onclick="state.modal={type:'viewFuel',id:'${f.id}'};render()">
+                  <div class="flex justify-between gap-2">
+                    <div class="min-w-0">
+                      <div class="font-medium text-sm">${esc(f.ref || '')} · ${esc(f.vehicle)} ${f.registration ? '('+esc(f.registration)+')' : ''}</div>
+                      <div class="text-xs text-slate-500">${f.litres || '—'} L · ${esc(f.fuelType)} · R ${f.amount || 0}${f.paymentMethod ? ' · ' + esc(f.paymentMethod) : ''}</div>
+                      <div class="text-xs text-slate-400">${esc(f.station || '')} · ${esc(f.driver || '')} · ${new Date(f.dateTime).toLocaleString()}</div>
+                      ${f.odometer ? `<div class="text-xs text-slate-400">Odo: ${f.odometer} km</div>` : ''}
+                      <div class="text-xs text-brand-600 mt-1">View · Edit · PDF ›</div>
+                    </div>
+                    ${f.receiptData || f.receipt ? `<img src="${f.receiptData || f.receipt}" class="w-12 h-12 object-cover rounded border shrink-0" />` : ''}
+                  </div>
+                </div>
+              `).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    // ---------- USERS ----------
+    function renderUsers() {
+      if (state.user.role !== 'admin') return '<p class="text-center text-slate-500 py-8">Admin access required</p>';
+      const list = state.data.users || [];
+      const vehicles = state.data.vehicles || [];
+      return `
+        <div class="space-y-5">
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <h3 class="font-semibold text-sm">Users</h3>
+              <div class="flex gap-1">
+                ${state.user.username === 'Admin' ? `<button type="button" onclick="forceLogoutAdmin()" class="btn btn-danger text-xs py-1">Force logout Admin</button>` : ''}
+                <button type="button" onclick="state.modal={type:'newUser'};render()" class="btn btn-primary text-xs py-1">+ Add User</button>
+              </div>
+            </div>
+            ${list.length === 0 ? '<p class="text-sm text-slate-400 text-center py-4">No users</p>' :
+              list.map(u => `
+                <div class="card p-3 flex justify-between items-center">
+                  <div>
+                    <div class="font-medium">${esc(u.name)}</div>
+                    <div class="text-xs text-slate-500">@${esc(u.username)} · ${esc(u.role)} ${u.active ? '' : '(inactive)'}</div>
+                  </div>
+                  <div class="flex gap-1">
+                    <button type="button" onclick="editUser('${u.id}')" class="btn btn-secondary text-xs">Edit</button>
+                    ${u.username !== 'Admin' ? `<button type="button" onclick="deleteUser('${u.id}')" class="btn btn-danger text-xs">Remove</button>` : ''}
+                  </div>
+                </div>
+              `).join('')}
+          </div>
+
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <h3 class="font-semibold text-sm">Company Vehicles</h3>
+              <button type="button" onclick="state.modal={type:'newVehicle'};render()" class="btn btn-primary text-xs py-1">+ Add Vehicle</button>
+            </div>
+            ${vehicles.length === 0 ? '<p class="text-sm text-slate-400 text-center py-4">No vehicles yet. Add one to use it in fuel logs.</p>' :
+              vehicles.map(v => `
+                <div class="card p-3 flex justify-between items-center">
+                  <div>
+                    <div class="font-medium">${esc(v.name)}</div>
+                    <div class="text-xs text-slate-500">${esc(v.registration) || 'No registration'} ${v.active === false ? '· inactive' : ''}</div>
+                  </div>
+                  <div class="flex gap-1">
+                    <button type="button" onclick="state.modal={type:'editVehicle',id:'${v.id}'};render()" class="btn btn-secondary text-xs">Edit</button>
+                    <button type="button" onclick="deleteVehicle('${v.id}')" class="btn btn-danger text-xs">Delete</button>
+                  </div>
+                </div>
+              `).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderAudit() {
+      if (state.user.role !== 'admin') return '<p class="text-center text-slate-500 py-8">Admin access required</p>';
+      const list = state.data.audit || [];
+      return `
+        <div class="space-y-2">
+          ${list.length === 0 ? '<p class="text-sm text-slate-400 text-center py-8">No audit entries</p>' :
+            list.map(a => `
+              <div class="card p-2 text-xs">
+                <span class="font-medium">${a.action}</span> ${a.entity} ${a.entityId ? a.entityId.slice(0,8) : ''}
+                <span class="text-slate-400"> · ${new Date(a.at).toLocaleString()}</span>
+              </div>
+            `).join('')}
+        </div>
+      `;
+    }
+
+    // ---------- MODALS ----------
+    function renderModal() {
+      const m = state.modal;
+      if (!m) return '';
+      if (m.type === 'more') {
+        return `
+          <div class="fixed inset-0 modal-bg z-50 flex items-end sm:items-center justify-center" style="position:fixed;inset:0;z-index:50" onclick="if(event.target===this){closeModal()}">
+            <div class="modal-panel bg-white rounded-t-2xl sm:rounded-2xl w-full max-w-sm p-4 space-y-1 shadow-xl" onclick="event.stopPropagation()">
+              <div class="text-center text-sm font-semibold mb-2">More</div>
+              <button type="button" onclick="navTo('deliveries')" class="w-full text-left p-3 rounded-lg hover:bg-slate-50">📦 Deliveries & Collections</button>
+              <button type="button" onclick="navTo('customers')" class="w-full text-left p-3 rounded-lg hover:bg-slate-50">👥 Clients</button>
+              ${state.user.role === 'admin' ? `
+                <button type="button" onclick="navTo('users')" class="w-full text-left p-3 rounded-lg hover:bg-slate-50">👤 Users & Roles</button>
+                <button type="button" onclick="navTo('audit')" class="w-full text-left p-3 rounded-lg hover:bg-slate-50">📜 Audit Trail</button>
+              ` : ''}
+              <button type="button" onclick="closeModal()" class="w-full text-center p-3 text-slate-500">Cancel</button>
+            </div>
+          </div>`;
+      }
+
+
+      if (m.type === 'signDelivery') {
+        const d = findDelivery(m.id) || {};
+        const who = d.type === 'collection' ? 'who handed over the collection' : 'who received the delivery';
+        return `
+          <div class="fixed inset-0 z-50 bg-white flex flex-col" style="position:fixed;top:0;right:0;bottom:0;left:0;z-index:50;background:#fff;display:flex;flex-direction:column;box-sizing:border-box;touch-action:none;overscroll-behavior:none;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)">
+            <div class="flex items-center justify-between px-4 py-3 border-b">
+              <div>
+                <div class="font-semibold">${d.type === 'collection' ? 'Collection sign-off' : 'Delivery sign-off'}</div>
+                <div class="text-xs text-slate-500">${esc(d.ref || '')} · ${who}</div>
+              </div>
+              <button type="button" onclick="closeModal()" class="text-slate-400 text-3xl leading-none px-2">&times;</button>
+            </div>
+            <div class="px-4 pt-3">
+              <label class="label">Name of person signing</label>
+              <input id="dc-sign-name" class="input" value="${esc(d.signature?.signedBy || '')}" placeholder="Full name" />
+            </div>
+            <div class="flex-1 p-3 min-h-0">
+              <canvas id="sig-canvas" class="w-full h-full border-2 border-dashed border-brand-200 rounded-lg bg-white touch-none" style="touch-action:none"></canvas>
+            </div>
+            <div class="p-3 flex gap-2 border-t">
+              <button type="button" onclick="clearSigPad()" class="btn btn-secondary flex-1">Clear</button>
+              <button type="button" onclick="saveDeliverySignature('${d.id}')" class="btn btn-primary flex-1">Save signature</button>
+            </div>
+          </div>`;
+      }
+
+      if (m.type === 'signJob') {
+        return `
+          <div class="fixed inset-0 z-50 bg-white flex flex-col" style="position:fixed;top:0;right:0;bottom:0;left:0;z-index:50;background:#fff;display:flex;flex-direction:column;box-sizing:border-box;touch-action:none;overscroll-behavior:none;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)">
+            <div class="flex items-center justify-between px-4 py-3 border-b">
+              <div>
+                <div class="font-semibold">Customer Signature</div>
+                <div class="text-xs text-slate-500">${esc(state.selectedJob?.jobNumber || '')} · Please sign in the box below</div>
+              </div>
+              <button onclick="closeSignModal()" class="text-slate-400 text-3xl leading-none px-2" aria-label="Cancel">&times;</button>
+            </div>
+            <div class="px-4 pt-3">
+              <label class="label">Name of person signing (optional)</label>
+              <input id="sig-name" class="input" placeholder="Customer" autocomplete="off" />
+            </div>
+            <div class="flex-1 min-h-0 relative m-4" style="position:relative;flex:1 1 0%;min-height:0;margin:16px">
+              <canvas id="sig-canvas" class="sig-canvas absolute inset-0 w-full h-full" style="position:absolute;top:0;left:0;width:100%;height:100%;box-sizing:border-box"></canvas>
+            </div>
+            <div class="flex gap-2 px-4 pb-4">
+              <button onclick="clearSig()" class="btn btn-secondary flex-1 py-3">Clear</button>
+              <button onclick="closeSignModal()" class="btn btn-secondary flex-1 py-3">Cancel</button>
+              <button id="sig-save" onclick="saveSig()" class="btn btn-primary flex-[2] py-3">Save Signature</button>
+            </div>
+          </div>`;
+      }
+
+      let title = '', body = '';
+      if (m.type === 'newJob' || m.type === 'editJob') {
+        title = 'New Job Card';
+        const customers = state.data.customers || [];
+        body = `
+          <form id="modal-form" class="space-y-3">
+            <div>
+              <label class="label">Customer</label>
+              <select name="customerId" class="input">
+                <option value="">— Select or type below —</option>
+                ${customers.map(c => `<option value="${c.id}">${c.companyName}</option>`).join('')}
+              </select>
+            </div>
+            <div><label class="label">Customer name (if new)</label><input name="customerName" class="input" /></div>
+            <div><label class="label">Site / Location</label><input name="siteLocation" class="input" required /></div>
+            <div><label class="label">Description</label><textarea name="description" class="input" rows="3" required></textarea></div>
+            <div class="grid grid-cols-2 gap-2">
+              <div><label class="label">Priority</label>
+                <select name="priority" class="input"><option value="normal">Normal</option><option value="high">High</option><option value="low">Low</option></select>
+              </div>
+              <div><label class="label">Start date</label><input type="date" name="startDate" class="input" value="${new Date().toISOString().slice(0,10)}" /></div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="label">Vehicle used</label>
+                <select name="vehicle" class="input">
+                  <option value="">— Select —</option>
+                  ${(state.data.vehicles || []).filter(v => v.active !== false).map(v =>
+                    `<option value="${esc(v.name)}">${esc(v.name)}${v.registration ? ' · ' + esc(v.registration) : ''}</option>`
+                  ).join('')}
+                </select>
+              </div>
+              <div>
+                <label class="label">Technician</label>
+                <select name="technician" class="input">
+                  <option value="">— Select —</option>
+                  ${(state.data.staff || []).map(s =>
+                    `<option value="${esc(s.name)}" ${s.name === state.user.name ? 'selected' : ''}>${esc(s.name)}</option>`
+                  ).join('')}
+                </select>
+              </div>
+            </div>
+            ${!(state.data.vehicles || []).length ? '<p class="text-[11px] text-amber-600">No vehicles yet. Add them under Users & Roles.</p>' : ''}
+            <div><label class="label">Notes</label><input name="notes" class="input" /></div>
+            <button type="submit" class="btn btn-primary w-full">Create Job Card</button>
+          </form>`;
+      } else if (m.type === 'newTask') {
+        title = 'Add Task';
+        body = `
+          <form id="modal-form" class="space-y-3">
+            <div><label class="label">Title</label><input name="title" class="input" required /></div>
+            <div><label class="label">Due date</label><input type="date" name="dueDate" class="input" value="${new Date().toISOString().slice(0,10)}" required /></div>
+            <div class="grid grid-cols-2 gap-2">
+              <div><label class="label">Start time</label><input type="time" name="startTime" class="input" /></div>
+              <div><label class="label">End time</label><input type="time" name="endTime" class="input" /></div>
+            </div>
+            <div><label class="label">Notes</label><input name="notes" class="input" /></div>
+            <button type="submit" class="btn btn-primary w-full">Add Task</button>
+          </form>`;
+      } else if (m.type === 'newCustomer' || m.type === 'editCustomer') {
+        const c = m.data || {};
+        title = m.type === 'editCustomer' ? 'Edit Customer' : 'New Customer';
+        body = `
+          <form id="modal-form" class="space-y-3">
+            <div><label class="label">Company name</label><input name="companyName" class="input" value="${c.companyName||''}" required /></div>
+            <div><label class="label">Contact person</label><input name="contactPerson" class="input" value="${c.contactPerson||''}" /></div>
+            <div><label class="label">Phone</label><input name="phone" class="input" value="${c.phone||''}" /></div>
+            <div><label class="label">Email</label><input name="email" type="email" class="input" value="${c.email||''}" /></div>
+            <div><label class="label">Address</label><input name="address" class="input" value="${c.address||''}" /></div>
+            <div><label class="label">Notes</label><textarea name="notes" class="input" rows="2">${c.notes||''}</textarea></div>
+            <button type="submit" class="btn btn-primary w-full">Save</button>
+          </form>`;
+      } else if (m.type === 'importCustomers') {
+        title = 'Import Customers (CSV)';
+        body = `
+          <p class="text-xs text-slate-500 mb-2">Paste CSV with headers: companyName, contactPerson, phone, email, address, notes</p>
+          <textarea id="import-csv" class="input h-40 font-mono text-xs" placeholder="companyName,contactPerson,phone,email,address&#10;Acme Ltd,John,082...,john@acme.com,123 Street"></textarea>
+          <button onclick="doImportCustomers()" class="btn btn-primary w-full mt-3">Import</button>`;
+      } else if (m.type === 'newDelivery' || m.type === 'editDelivery') {
+        const isEdit = m.type === 'editDelivery';
+        const d = isEdit ? (findDelivery(m.id) || {}) : {};
+        const dtype = d.type || m.dtype || 'delivery';
+        const label = dtype === 'collection' ? 'Collection' : 'Delivery';
+        title = isEdit ? 'Edit ' + label + (d.ref ? ' ' + esc(d.ref) : '') : 'New ' + label;
+        body = `
+          <form id="modal-form" class="space-y-3">
+            ${isEdit ? `
+              <div><label class="label">Type</label>
+                <select name="type" class="input">
+                  <option value="delivery" ${dtype === 'delivery' ? 'selected' : ''}>Delivery</option>
+                  <option value="collection" ${dtype === 'collection' ? 'selected' : ''}>Collection</option>
+                </select>
+              </div>` : `<input type="hidden" name="type" value="${esc(dtype)}" />`}
+            <div><label class="label">Item / Package details</label><input name="itemDetails" class="input" value="${esc(d.itemDetails)}" required /></div>
+            <div><label class="label">Customer / Site</label><input name="customerName" class="input" value="${esc(d.customerName)}" /></div>
+            <div><label class="label">Site address</label><input name="site" class="input" value="${esc(d.site)}" /></div>
+            <div><label class="label">Driver</label><input name="driver" class="input" value="${esc(isEdit ? d.driver : state.user.name)}" /></div>
+            <div><label class="label">Date & time</label><input type="datetime-local" name="dateTime" class="input" value="${toLocalInput(d.dateTime)}" /></div>
+            <div><label class="label">Status</label>
+              <select name="status" class="input">
+                <option value="completed" ${(d.status || 'completed') === 'completed' ? 'selected' : ''}>Completed</option>
+                <option value="pending" ${d.status === 'pending' ? 'selected' : ''}>Pending</option>
+              </select>
+            </div>
+            <div><label class="label">Notes</label><input name="notes" class="input" value="${esc(d.notes)}" /></div>
+            <button type="submit" class="btn btn-primary w-full">Save</button>
+          </form>`;
+      } else if (m.type === 'viewDelivery') {
+        const d = findDelivery(m.id);
+        if (!d) {
+          title = 'Not found';
+          body = '<p class="text-sm text-slate-500">This record no longer exists.</p>';
+        } else {
+          const row = (l, v) => `<div><div class="label">${l}</div><div class="text-sm whitespace-pre-wrap break-words">${esc(v) || '—'}</div></div>`;
+          const canDelete = ['admin', 'office'].includes(state.user.role);
+          title = (d.type === 'collection' ? 'Collection ' : 'Delivery ') + esc(d.ref);
+          body = `
+            <div class="space-y-3">
+              <div class="flex gap-2 items-center">
+                <span class="text-xs font-medium px-2 py-0.5 rounded ${d.type === 'delivery' ? 'bg-sky-100 text-sky-800' : 'bg-violet-100 text-violet-800'}">${esc(d.type)}</span>
+                <span class="text-xs px-2 py-0.5 rounded-full status-${d.status === 'completed' ? 'completed' : 'pending'}">${esc(d.status)}</span>
+              </div>
+              ${row('Date & time', new Date(d.dateTime).toLocaleString())}
+              ${row('Item / package details', d.itemDetails)}
+              ${row('Customer', d.customerName)}
+              ${row('Site address', d.site)}
+              ${row('Driver', d.driver)}
+              ${row('Notes', d.notes)}
+              <div>
+                <div class="label">${d.type === 'collection' ? 'Signed by (handed over)' : 'Signed by (received)'}</div>
+                ${d.signature ? `
+                  <img src="${d.signature.data || d.signature.path}" class="border rounded-lg max-h-28 bg-white mt-1" />
+                  <p class="text-xs text-slate-500 mt-1">${esc(d.signature.signedBy)} · ${new Date(d.signature.signedAt).toLocaleString()}</p>
+                ` : '<p class="text-xs text-slate-400 mt-1">No signature yet</p>'}
+                <button type="button" onclick="openDeliverySign('${d.id}')" class="btn btn-secondary text-xs mt-2">${d.signature ? 'Update signature' : 'Capture signature'}</button>
+              </div>
+              <div class="grid grid-cols-2 gap-2 pt-2">
+                <button type="button" onclick="exportDeliveryPdf('${d.id}')" class="btn btn-primary">Export PDF</button>
+                <button type="button" onclick="state.modal={type:'editDelivery',id:'${d.id}'};render()" class="btn btn-secondary">Edit</button>
+              </div>
+              ${canDelete ? `<button onclick="deleteDelivery('${d.id}')" class="btn btn-danger w-full">Delete</button>` : ''}
+            </div>`;
+        }
+      } else if (m.type === 'editJobDetails') {
+        const j = state.selectedJob || {};
+        title = 'Edit job details';
+        body = `
+          <form id="modal-form" class="space-y-3">
+            <div><label class="label">Customer</label><input name="customerName" class="input" value="${esc(j.customerName)}" /></div>
+            <div><label class="label">Site / location</label><input name="siteLocation" class="input" value="${esc(j.siteLocation)}" /></div>
+            <div class="grid grid-cols-2 gap-2">
+              <div><label class="label">Start date</label><input type="date" name="startDate" class="input" value="${j.startDate || ''}" /></div>
+              <div><label class="label">Completion date</label><input type="date" name="completionDate" class="input" value="${j.completionDate || ''}" /></div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div><label class="label">Priority</label>
+                <select name="priority" class="input">
+                  <option value="low" ${j.priority==='low'?'selected':''}>Low</option>
+                  <option value="normal" ${j.priority==='normal'||!j.priority?'selected':''}>Normal</option>
+                  <option value="high" ${j.priority==='high'?'selected':''}>High</option>
+                  <option value="urgent" ${j.priority==='urgent'?'selected':''}>Urgent</option>
+                </select>
+              </div>
+              <div><label class="label">Status</label>
+                <select name="status" class="input">
+                  <option value="open" ${j.status==='open'?'selected':''}>Open</option>
+                  <option value="in_progress" ${j.status==='in_progress'?'selected':''}>In progress</option>
+                  <option value="completed" ${j.status==='completed'?'selected':''}>Completed</option>
+                </select>
+              </div>
+            </div>
+            <div><label class="label">Description</label><textarea name="description" class="input" rows="3">${esc(j.description)}</textarea></div>
+            <div><label class="label">Notes</label><textarea name="notes" class="input" rows="2">${esc(j.notes)}</textarea></div>
+            <button type="submit" class="btn btn-primary w-full">Save details</button>
+          </form>`;
+      } else if (m.type === 'editJobMeta') {
+        const j = state.selectedJob || {};
+        const vehicles = state.data.vehicles || [];
+        const staff = state.data.staff || [];
+        title = 'Vehicle & Technician';
+        body = `
+          <form id="modal-form" class="space-y-3">
+            <div>
+              <label class="label">Vehicle used for job</label>
+              <select name="vehicle" class="input">
+                <option value="">— Select vehicle —</option>
+                ${vehicles.filter(v => v.active !== false).map(v =>
+                  `<option value="${esc(v.name)}" ${j.vehicle === v.name ? 'selected' : ''}>${esc(v.name)}${v.registration ? ' · ' + esc(v.registration) : ''}</option>`
+                ).join('')}
+              </select>
+              ${vehicles.length === 0 ? '<p class="text-[11px] text-amber-600 mt-1">No vehicles yet. Add them under Users & Roles.</p>' : ''}
+            </div>
+            <div>
+              <label class="label">Technician who did the job</label>
+              <select name="technician" class="input">
+                <option value="">— Select technician —</option>
+                ${staff.map(s => `<option value="${esc(s.name)}" ${j.technician === s.name ? 'selected' : ''}>${esc(s.name)} · ${esc(s.role)}</option>`).join('')}
+              </select>
+              ${staff.length === 0 ? '<p class="text-[11px] text-amber-600 mt-1">No staff loaded.</p>' : ''}
+            </div>
+            <button type="submit" class="btn btn-primary w-full">Save</button>
+          </form>`;
+      } else if (m.type === 'editJobScope') {
+        const j = state.selectedJob || {};
+        title = 'Job Scope';
+        body = `
+          <form id="modal-form" class="space-y-3">
+            <div><label class="label">Work carried out</label><textarea name="workCarriedOut" class="input" rows="3">${j.workCarriedOut || ''}</textarea></div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label class="label">Time in</label>
+                ${timeSelectHtml('timeIn', j.timeIn)}
+                <button type="button" class="text-xs text-brand-600 mt-1" onclick="setScopeTimeNow('timeIn')">Set to now</button>
+              </div>
+              <div>
+                <label class="label">Time out</label>
+                ${timeSelectHtml('timeOut', j.timeOut)}
+                <button type="button" class="text-xs text-brand-600 mt-1" onclick="setScopeTimeNow('timeOut')">Set to now</button>
+              </div>
+            </div>
+            <input type="hidden" name="timeIn" id="scope-time-in" value="${j.timeIn || ''}" />
+            <input type="hidden" name="timeOut" id="scope-time-out" value="${j.timeOut || ''}" />
+            <div class="text-sm bg-brand-50 border border-brand-100 rounded-lg px-3 py-2">
+              <span class="text-slate-600">Time spent:</span>
+              <span id="scope-hours-preview" class="font-semibold text-brand-800 ml-1">${(hoursSpentFromTimes(j.timeIn, j.timeOut) || {}).label || '—'}</span>
+            </div>
+            <div><label class="label">Equipment / Spares</label><textarea name="equipmentSpares" class="input" rows="2" placeholder="Materials used on this job">${j.equipmentSpares || ''}</textarea></div>
+            <div><label class="label">Comments</label><textarea name="scopeComments" class="input" rows="2">${j.scopeComments || ''}</textarea></div>
+            <div><label class="label">Job rating (1–5)</label>
+              <select name="jobRating" class="input">
+                <option value="">— Not rated —</option>
+                ${[1,2,3,4,5].map(n => `<option value="${n}" ${Number(j.jobRating)===n?'selected':''}>${n} star${n>1?'s':''}</option>`).join('')}
+              </select>
+            </div>
+            <div><label class="label flex items-center gap-2"><input type="checkbox" name="hasInvoice" id="scope-has-invoice" ${j.hasInvoice ? 'checked' : ''} onchange="toggleInvoiceNumberField()" /> Invoice for this job</label></div>
+            <div id="scope-invoice-number-wrap" class="${j.hasInvoice ? '' : 'hidden'}">
+              <label class="label">Invoice number</label>
+              <input name="invoiceNumber" id="scope-invoice-number" class="input" value="${j.hasInvoice ? (j.invoiceNumber || '') : ''}" placeholder="e.g. INV-1001" ${j.hasInvoice ? '' : 'disabled'} />
+            </div>
+            <button type="submit" class="btn btn-primary w-full">Save Job Scope</button>
+          </form>`;
+      } else if (m.type === 'newFuel' || m.type === 'editFuel') {
+        const isEdit = m.type === 'editFuel';
+        const f = isEdit ? (findFuel(m.id) || {}) : {};
+        title = isEdit ? ('Edit ' + (f.ref || 'Fuel')) : 'Fuel Log Entry';
+        const pay = f.paymentMethod || '';
+        body = `
+          <form id="modal-form" class="space-y-3">
+            <div>
+              <label class="label">Vehicle</label>
+              <select name="vehicleId" id="fuel-vehicle-select" class="input" onchange="onFuelVehicleChange()">
+                <option value="">— Select vehicle —</option>
+                ${(state.data.vehicles || []).filter(v => v.active !== false).map(v =>
+                  `<option value="${v.id}" data-reg="${esc(v.registration)}" ${f.vehicle === v.name ? 'selected' : ''}>${esc(v.name)}</option>`
+                ).join('')}
+              </select>
+              ${(state.data.vehicles || []).length === 0 ? '<p class="text-[11px] text-amber-600 mt-1">No vehicles yet. Add them under Users & Roles.</p>' : ''}
+            </div>
+            <div>
+              <label class="label">Registration</label>
+              <input name="registration" id="fuel-reg-display" class="input bg-slate-50" value="${esc(f.registration)}" readonly />
+            </div>
+            <input type="hidden" name="vehicle" id="fuel-vehicle-name" value="${esc(f.vehicle || '')}" />
+            <div class="grid grid-cols-2 gap-2">
+              <div><label class="label">Odometer (km)</label><input name="odometer" type="number" class="input" value="${f.odometer != null ? f.odometer : ''}" /></div>
+              <div><label class="label">Fuel type</label>
+                <select name="fuelType" class="input">
+                  <option ${f.fuelType==='Diesel'||!f.fuelType?'selected':''}>Diesel</option>
+                  <option ${f.fuelType==='Petrol'?'selected':''}>Petrol</option>
+                </select>
+              </div>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div><label class="label">Litres</label><input name="litres" type="number" step="0.01" class="input" value="${f.litres != null ? f.litres : ''}" required /></div>
+              <div><label class="label">Amount (R)</label><input name="amount" type="number" step="0.01" class="input" value="${f.amount != null ? f.amount : ''}" required /></div>
+            </div>
+            <div><label class="label">Payment method</label>
+              <select name="paymentMethod" class="input">
+                <option value="">— Select —</option>
+                <option value="Cash" ${pay==='Cash'?'selected':''}>Cash</option>
+                <option value="Card" ${pay==='Card'?'selected':''}>Card</option>
+                <option value="Company account" ${pay==='Company account'?'selected':''}>Company account</option>
+                <option value="Fleet card" ${pay==='Fleet card'?'selected':''}>Fleet card</option>
+                <option value="Other" ${pay==='Other'?'selected':''}>Other</option>
+              </select>
+            </div>
+            <div><label class="label">Station / Location</label><input name="station" class="input" value="${esc(f.station)}" /></div>
+            <div><label class="label">Driver</label><input name="driver" class="input" value="${esc(isEdit ? f.driver : state.user.name)}" /></div>
+            <div><label class="label">Date & time</label><input type="datetime-local" name="dateTime" class="input" value="${toLocalInput(f.dateTime)}" /></div>
+            <div>
+              <label class="label">Receipt photo (fuel slip)</label>
+              <div class="flex gap-1 flex-wrap">
+                <button type="button" class="btn btn-secondary text-xs py-1.5 px-2" onclick="document.getElementById('fuel-receipt-camera').click()">Camera</button>
+                <button type="button" class="btn btn-secondary text-xs py-1.5 px-2" onclick="document.getElementById('fuel-receipt-gallery').click()">Gallery</button>
+                ${(isEdit && (f.receipt || f.receiptData)) ? `<button type="button" class="btn btn-danger text-xs py-1.5 px-2" onclick="document.getElementById('fuel-clear-receipt').value='1'; document.getElementById('fuel-receipt-preview').style.display='none'; this.style.display='none';">Remove photo</button>` : ''}
+              </div>
+              <input id="fuel-receipt-camera" type="file" accept="image/*" capture="environment" class="hidden" onchange="previewFuelReceipt(event)" />
+              <input id="fuel-receipt-gallery" type="file" accept="image/*" class="hidden" onchange="previewFuelReceipt(event)" />
+              <input type="hidden" id="fuel-clear-receipt" name="clearReceipt" value="0" />
+              <div id="fuel-receipt-preview" class="mt-2 ${(isEdit && (f.receipt || f.receiptData)) ? '' : 'hidden'}">
+                ${(isEdit && (f.receiptData || f.receipt)) ? `<img src="${f.receiptData || f.receipt}" class="max-h-32 rounded border" />` : ''}
+              </div>
+              <p class="text-[11px] text-slate-400 mt-1">Camera opens the phone camera for the slip. Gallery picks an existing photo.</p>
+            </div>
+            <div><label class="label">Notes</label><input name="notes" class="input" value="${esc(f.notes)}" /></div>
+            <button type="submit" class="btn btn-primary w-full">${isEdit ? 'Save changes' : 'Save Fuel Log'}</button>
+          </form>`;
+      } else if (m.type === 'viewFuel') {
+        const f = findFuel(m.id);
+        if (!f) {
+          title = 'Fuel entry';
+          body = '<p class="text-sm text-slate-500">Record not found.</p>';
+        } else {
+          const canDelete = ['admin', 'office'].includes(state.user.role);
+          title = esc(f.ref || 'Fuel') + ' details';
+          const row = (l, v) => `<div><div class="label">${l}</div><div class="text-sm break-words">${esc(v) || '—'}</div></div>`;
+          body = `
+            <div class="space-y-3">
+              ${row('Date & time', new Date(f.dateTime).toLocaleString())}
+              ${row('Vehicle', f.vehicle + (f.registration ? ' (' + f.registration + ')' : ''))}
+              ${row('Odometer', f.odometer != null ? f.odometer + ' km' : '')}
+              ${row('Fuel type', f.fuelType)}
+              ${row('Litres', f.litres)}
+              ${row('Amount', f.amount != null ? 'R ' + Number(f.amount).toFixed(2) : '')}
+              ${row('Payment method', f.paymentMethod)}
+              ${row('Station', f.station)}
+              ${row('Driver', f.driver)}
+              ${row('Notes', f.notes)}
+              ${f.receiptData || f.receipt ? `<div><div class="label">Receipt</div><img src="${f.receiptData || f.receipt}" class="max-h-40 rounded border mt-1" /></div>` : ''}
+              <div class="grid grid-cols-2 gap-2 pt-2">
+                <button type="button" onclick="exportFuelPdf('${f.id}')" class="btn btn-primary">Export PDF</button>
+                <button type="button" onclick="state.modal={type:'editFuel',id:'${f.id}'};render()" class="btn btn-secondary">Edit</button>
+              </div>
+              ${canDelete ? `<button type="button" onclick="deleteFuel('${f.id}')" class="btn btn-danger w-full">Delete</button>` : ''}
+            </div>`;
+        }
+      } else if (m.type === 'newVehicle' || m.type === 'editVehicle') {
+        const isEdit = m.type === 'editVehicle';
+        const v = isEdit ? ((state.data.vehicles || []).find(x => x.id === m.id) || {}) : {};
+        title = isEdit ? 'Edit Vehicle' : 'Add Vehicle';
+        body = `
+          <form id="modal-form" class="space-y-3">
+            <div><label class="label">Vehicle name</label><input name="name" class="input" value="${esc(v.name)}" required placeholder="e.g. Company Van" /></div>
+            <div><label class="label">Registration</label><input name="registration" class="input" value="${esc(v.registration)}" placeholder="e.g. CA 123-456" /></div>
+            <div><label class="label">Notes</label><input name="notes" class="input" value="${esc(v.notes)}" /></div>
+            <button type="submit" class="btn btn-primary w-full">${isEdit ? 'Save' : 'Add Vehicle'}</button>
+          </form>`;
+      } else if (m.type === 'newUser' || m.type === 'editUser') {
+        const u = m.data || {};
+        title = m.type === 'editUser' ? 'Edit User' : 'New User';
+        body = `
+          <form id="modal-form" class="space-y-3">
+            <div><label class="label">Name</label><input name="name" class="input" value="${u.name||''}" required /></div>
+            <div><label class="label">Username</label><input name="username" class="input" value="${u.username||''}" required /></div>
+            <div>
+              <label class="label">Password ${u.id?'(leave blank to keep)':''}</label>
+              <div class="relative">
+                <input name="password" id="user-password" type="text" class="input pr-16" ${u.id?'':'required'} />
+                <button type="button" onclick="toggleUserPassword()" class="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-brand-600">Hide</button>
+              </div>
+            </div>
+            <div><label class="label">Role</label>
+              <select name="role" class="input">
+                <option value="admin" ${u.role==='admin'?'selected':''}>Admin</option>
+                <option value="office" ${u.role==='office'?'selected':''}>Office</option>
+                <option value="field" ${u.role==='field'?'selected':''}>Field</option>
+              </select>
+            </div>
+            ${u.id ? `<div><label class="label"><input type="checkbox" name="active" ${u.active!==false?'checked':''} /> Active</label></div>` : ''}
+            <button type="submit" class="btn btn-primary w-full">Save</button>
+          </form>`;
+      }
+
+      return `
+        <div class="fixed inset-0 modal-bg z-50 flex items-end sm:items-center justify-center p-0 sm:p-4"
+             style="position:fixed;inset:0;z-index:50"
+             onclick="if(event.target===this){closeModal()}">
+          <div class="modal-panel bg-white rounded-t-2xl sm:rounded-2xl w-full max-w-md max-h-[90vh] overflow-y-auto p-4 shadow-xl"
+               style="max-height:90vh"
+               onclick="event.stopPropagation()">
+            <div class="flex justify-between items-center mb-4 sticky top-0 bg-white z-10 pb-1">
+              <h3 class="font-semibold">${title}</h3>
+              <button type="button" onclick="closeModal()" class="text-slate-400 text-xl leading-none px-2">&times;</button>
+            </div>
+            ${body}
+          </div>
+        </div>`;
+    }
+
+    function bindGlobal() {
+      // job search
+      const js = document.getElementById('job-search');
+      if (js) {
+        js.oninput = debounce(() => {
+          state.filters.jobQ = js.value;
+          loadViewData();
+        }, 300);
+      }
+      const jsf = document.getElementById('job-status-filter');
+      if (jsf) jsf.onchange = () => { state.filters.jobStatus = jsf.value; render(); };
+
+      const cs = document.getElementById('cust-search');
+      if (cs) {
+        cs.oninput = debounce(async () => {
+          state.filters.custQ = cs.value;
+          state.data.customers = await api('/api/customers?q=' + encodeURIComponent(cs.value));
+          render();
+        }, 300);
+      }
+
+      // modal forms
+      const form = document.getElementById('modal-form');
+      if (form) {
+        form.onsubmit = async (e) => {
+          e.preventDefault();
+          const fd = new FormData(form);
+          const body = Object.fromEntries(fd.entries());
+          try {
+            const m = state.modal;
+            if (m.type === 'newJob') {
+              await api('/api/jobs', { method: 'POST', body });
+              toast('Job card created', 'success');
+            } else if (m.type === 'editJobDetails') {
+              await api('/api/jobs/' + m.id, { method: 'PUT', body: {
+                customerName: body.customerName,
+                siteLocation: body.siteLocation,
+                startDate: body.startDate,
+                completionDate: body.completionDate,
+                priority: body.priority,
+                status: body.status,
+                description: body.description,
+                notes: body.notes
+              }});
+              state.selectedJob = await api('/api/jobs/' + m.id);
+              toast('Job details saved', 'success');
+            } else if (m.type === 'editJobMeta') {
+              await api('/api/jobs/' + m.id, { method: 'PUT', body: { vehicle: body.vehicle, technician: body.technician } });
+              state.selectedJob = await api('/api/jobs/' + m.id);
+              toast('Updated', 'success');
+            } else if (m.type === 'editJobScope') {
+              body.hasInvoice = !!(form.querySelector('[name=hasInvoice]') && form.querySelector('[name=hasInvoice]').checked);
+              if (!body.hasInvoice) body.invoiceNumber = '';
+              const spent = hoursSpentFromTimes(body.timeIn, body.timeOut);
+              await api('/api/jobs/' + m.id, { method: 'PUT', body: {
+                workCarriedOut: body.workCarriedOut,
+                timeIn: body.timeIn,
+                timeOut: body.timeOut,
+                equipmentSpares: body.equipmentSpares,
+                scopeComments: body.scopeComments,
+                jobRating: body.jobRating,
+                hasInvoice: body.hasInvoice,
+                invoiceNumber: body.hasInvoice ? (body.invoiceNumber || '') : '',
+                timeSpentHours: spent ? spent.decimal : null
+              }});
+              state.selectedJob = await api('/api/jobs/' + m.id);
+              toast('Job scope saved', 'success');
+            } else if (m.type === 'newTask') {
+              await api('/api/tasks', { method: 'POST', body: { ...body, jobId: m.jobId } });
+              toast('Task added', 'success');
+              state.selectedJob = await api('/api/jobs/' + m.jobId);
+            } else if (m.type === 'newCustomer') {
+              await api('/api/customers', { method: 'POST', body });
+              toast('Customer added', 'success');
+            } else if (m.type === 'editCustomer') {
+              await api('/api/customers/' + m.data.id, { method: 'PUT', body });
+              toast('Customer updated', 'success');
+            } else if (m.type === 'newDelivery') {
+              if (body.dateTime) body.dateTime = new Date(body.dateTime).toISOString();
+              await api('/api/deliveries', { method: 'POST', body });
+              toast('Saved', 'success');
+            } else if (m.type === 'editDelivery') {
+              if (body.dateTime) body.dateTime = new Date(body.dateTime).toISOString();
+              await api('/api/deliveries/' + m.id, { method: 'PUT', body });
+              toast('Updated', 'success');
+            } else if (m.type === 'newFuel' || m.type === 'editFuel') {
+              if (body.dateTime) body.dateTime = new Date(body.dateTime).toISOString();
+              const vSel = document.getElementById('fuel-vehicle-select');
+              const vName = document.getElementById('fuel-vehicle-name');
+              if (vSel && vSel.selectedIndex > 0) {
+                body.vehicle = vSel.options[vSel.selectedIndex].text;
+                body.registration = vSel.options[vSel.selectedIndex].getAttribute('data-reg') || '';
+              } else if (vName) {
+                body.vehicle = vName.value;
+              }
+              const cam = document.getElementById('fuel-receipt-camera');
+              const gal = document.getElementById('fuel-receipt-gallery');
+              const file = (cam && cam.files && cam.files[0]) || (gal && gal.files && gal.files[0]);
+              if (file) {
+                body.receiptData = await fileToBase64(file);
+              }
+              const clear = document.getElementById('fuel-clear-receipt');
+              if (clear && clear.value === '1' && !file) {
+                body.clearReceipt = true;
+              }
+              if (m.type === 'newFuel') {
+                await api('/api/fuel', { method: 'POST', body });
+                toast('Fuel log saved', 'success');
+              } else {
+                await api('/api/fuel/' + m.id, { method: 'PUT', body });
+                toast('Fuel log updated', 'success');
+              }
+            } else if (m.type === 'newVehicle') {
+              await api('/api/vehicles', { method: 'POST', body });
+              toast('Vehicle added', 'success');
+            } else if (m.type === 'editVehicle') {
+              await api('/api/vehicles/' + m.id, { method: 'PUT', body });
+              toast('Vehicle updated', 'success');
+            } else if (m.type === 'newUser') {
+              await api('/api/users', { method: 'POST', body });
+              toast('User created', 'success');
+            } else if (m.type === 'editUser') {
+              body.active = form.querySelector('[name=active]')?.checked ?? true;
+              if (!body.password) delete body.password;
+              await api('/api/users/' + m.data.id, { method: 'PUT', body });
+              toast('User updated', 'success');
+            }
+            state.modal = null;
+            loadViewData();
+          } catch (err) {
+            toast(err.message, 'error');
+          }
+        };
+      }
+
+      // signature pad (lives inside the full-screen pop-up)
+      const canvas = document.getElementById('sig-canvas');
+      if (canvas) initSigPad(canvas);
+    }
+
+    // Lock page scroll + block background interaction while any modal is open
+    let _scrollY = 0;
+    window.closeModal = () => {
+      state.modal = null;
+      render();
+    };
+    function setModalScrollLock(locked) {
+      const body = document.body;
+      const html = document.documentElement;
+      if (locked) {
+        if (!body.classList.contains('modal-open')) {
+          _scrollY = window.scrollY || window.pageYOffset || 0;
+          body.classList.add('modal-open');
+          html.classList.add('modal-open');
+          body.style.top = (-_scrollY) + 'px';
+        }
+      } else {
+        if (body.classList.contains('modal-open')) {
+          body.classList.remove('modal-open');
+          html.classList.remove('modal-open');
+          body.style.top = '';
+          window.scrollTo(0, _scrollY || 0);
+        }
+        body.style.overflow = '';
+        html.style.overscrollBehavior = '';
+      }
+    }
+
+    // ---------- Signature ----------
+    let sigPad = null;
+    let sigObserver = null;
+    let sigSaving = false;
+    function initSigPad(canvas) {
+      const ctx = canvas.getContext('2d');
+      let drawing = false;
+      let hasInk = false;
+
+      // Size the drawing bitmap to the box's real on-screen size (device pixels)
+      const setup = () => {
+        const r = canvas.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return false; // not laid out yet
+        const ratio = Math.max(window.devicePixelRatio || 1, 1);
+        const w = Math.round(r.width * ratio), h = Math.round(r.height * ratio);
+        if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.strokeStyle = '#1e3a8a';
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        return true;
+      };
+      setup();
+
+      // Finger position -> bitmap coordinates (stays correct even if CSS size and bitmap size differ)
+      const pos = (e) => {
+        const r = canvas.getBoundingClientRect();
+        const t = e.touches && e.touches[0] ? e.touches[0] : e;
+        return {
+          x: (t.clientX - r.left) * (canvas.width / r.width),
+          y: (t.clientY - r.top) * (canvas.height / r.height),
+          k: canvas.width / r.width
+        };
+      };
+      const start = (e) => {
+        e.preventDefault();
+        if (canvas.width < 2) setup();
+        drawing = true;
+        hasInk = true;
+        const p = pos(e);
+        ctx.lineWidth = 2.5 * p.k;
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(p.x + 0.01, p.y + 0.01); // lets a single tap leave a dot
+        ctx.stroke();
+      };
+      const move = (e) => { if (!drawing) return; e.preventDefault(); const p = pos(e); ctx.lineTo(p.x, p.y); ctx.stroke(); };
+      const end = () => { drawing = false; };
+      canvas.addEventListener('mousedown', start);
+      canvas.addEventListener('mousemove', move);
+      canvas.addEventListener('mouseup', end);
+      canvas.addEventListener('mouseleave', end);
+      canvas.addEventListener('touchstart', start, { passive: false });
+      canvas.addEventListener('touchmove', move, { passive: false });
+      canvas.addEventListener('touchend', end);
+      canvas.addEventListener('touchcancel', end);
+
+      // Re-size when the layout settles / phone rotates / keyboard opens (only while still blank)
+      if (sigObserver) sigObserver.disconnect();
+      if ('ResizeObserver' in window) {
+        sigObserver = new ResizeObserver(() => { if (!hasInk) setup(); });
+        sigObserver.observe(canvas);
+      }
+
+      sigPad = {
+        canvas,
+        ctx,
+        get hasInk() { return hasInk; },
+        clear: () => { ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.restore(); hasInk = false; setup(); }
+      };
+    }
+
+    // Crop to the pen strokes (with padding) on a white background; returns null if nothing was drawn
+    function exportSigData(canvas) {
+      const { width, height } = canvas;
+      const px = canvas.getContext('2d').getImageData(0, 0, width, height).data;
+      let minX = width, minY = height, maxX = -1, maxY = -1;
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          if (px[(y * width + x) * 4 + 3] > 0) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+      if (maxX < 0) return null;
+      const pad = 24;
+      const sx = Math.max(0, minX - pad), sy = Math.max(0, minY - pad);
+      const sw = Math.min(width, maxX + pad) - sx, sh = Math.min(height, maxY + pad) - sy;
+      const c = document.createElement('canvas');
+      c.width = sw;
+      c.height = sh;
+      const cx = c.getContext('2d');
+      cx.fillStyle = '#ffffff';
+      cx.fillRect(0, 0, sw, sh);
+      cx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+      return c.toDataURL('image/png');
+    }
+
+    window.openDeliverySign = (id) => { state.modal = { type: 'signDelivery', id }; render(); };
+
+    window.saveDeliverySignature = async (id) => {
+      const name = (document.getElementById('dc-sign-name')?.value || '').trim();
+      if (!name) { toast('Enter the name of the person signing', 'error'); return; }
+      const canvas = document.getElementById('sig-canvas');
+      const data = exportSigData(canvas);
+      if (!canvas || !data) { toast('Please sign in the box', 'error'); return; }
+      try {
+        await api('/api/deliveries/' + id, { method: 'PUT', body: { signatureData: data, signedBy: name } });
+        toast('Signature saved', 'success');
+        state.modal = { type: 'viewDelivery', id };
+        loadViewData();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+
+        window.openSignModal = () => { state.modal = { type: 'signJob' }; render(); };
+    window.closeSignModal = () => {
+      if (sigObserver) { sigObserver.disconnect(); sigObserver = null; }
+      sigPad = null;
+      state.modal = null;
+      render();
+    };
+    window.clearSig = () => sigPad?.clear();
+    window.saveSig = async () => {
+      if (!sigPad || sigSaving) return;
+      const data = exportSigData(sigPad.canvas);
+      if (!data) { toast('Please sign in the box first', 'error'); return; }
+      const signedBy = (document.getElementById('sig-name')?.value || '').trim() || 'Customer';
+      sigSaving = true;
+      const btn = document.getElementById('sig-save');
+      if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+      try {
+        const id = state.selectedJob.id;
+        await api('/api/jobs/' + id + '/signature', { method: 'PUT', body: { signatureData: data, signedBy } });
+        state.selectedJob = await api('/api/jobs/' + id); // refetch so tasks stay in the view
+        toast('Signature saved', 'success');
+        window.closeSignModal();
+      } catch (e) {
+        toast(e.message, 'error');
+        if (btn) { btn.disabled = false; btn.textContent = 'Save Signature'; }
+      } finally {
+        sigSaving = false;
+      }
+    };
+
+    window.toggleInvoiceNumberField = () => {
+      const cb = document.getElementById('scope-has-invoice');
+      const wrap = document.getElementById('scope-invoice-number-wrap');
+      const inp = document.getElementById('scope-invoice-number');
+      if (!cb || !wrap || !inp) return;
+      if (cb.checked) {
+        wrap.classList.remove('hidden');
+        inp.disabled = false;
+      } else {
+        wrap.classList.add('hidden');
+        inp.value = '';
+        inp.disabled = true;
+      }
+    };
+
+        window.syncScopeTimesFromSelects = () => {
+      const form = document.getElementById('modal-form');
+      if (!form) return;
+      const comb = (prefix) => {
+        const h = form.querySelector('[name="' + prefix + 'H"]');
+        const m = form.querySelector('[name="' + prefix + 'M"]');
+        if (!h || !m || !h.value || !m.value) return '';
+        return h.value + ':' + m.value;
+      };
+      const tin = comb('timeIn');
+      const tout = comb('timeOut');
+      const hin = document.getElementById('scope-time-in');
+      const hout = document.getElementById('scope-time-out');
+      if (hin) hin.value = tin;
+      if (hout) hout.value = tout;
+      const el = document.getElementById('scope-hours-preview');
+      if (el) {
+        const h = hoursSpentFromTimes(tin, tout);
+        el.textContent = h ? h.label : '—';
+      }
+    };
+
+    window.setScopeTimeNow = (prefix) => {
+      const form = document.getElementById('modal-form');
+      if (!form) return;
+      const now = new Date();
+      const hs = String(now.getHours()).padStart(2, '0');
+      const ms = String(now.getMinutes()).padStart(2, '0');
+      const hSel = form.querySelector('[name="' + prefix + 'H"]');
+      const mSel = form.querySelector('[name="' + prefix + 'M"]');
+      if (hSel) hSel.value = hs;
+      if (mSel) mSel.value = ms;
+      syncScopeTimesFromSelects();
+    };
+
+    window.updateScopeHoursPreview = () => { syncScopeTimesFromSelects(); };
+
+        window.previewFuelReceipt = (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const wrap = document.getElementById('fuel-receipt-preview');
+      if (!wrap) return;
+      const url = URL.createObjectURL(file);
+      wrap.innerHTML = '<img src="' + url + '" class="max-h-32 rounded border" />';
+      wrap.classList.remove('hidden');
+      wrap.style.display = '';
+      const clear = document.getElementById('fuel-clear-receipt');
+      if (clear) clear.value = '0';
+    };
+
+        window.onFuelVehicleChange = () => {
+      const sel = document.getElementById('fuel-vehicle-select');
+      const reg = document.getElementById('fuel-reg-display');
+      const name = document.getElementById('fuel-vehicle-name');
+      if (!sel || !reg) return;
+      const opt = sel.options[sel.selectedIndex];
+      reg.value = opt ? (opt.getAttribute('data-reg') || '') : '';
+      if (name) name.value = opt && opt.value ? opt.text : '';
+    };
+
+    window.toggleLoginPassword = () => {
+      const input = document.getElementById('login-password');
+      const btn = input?.nextElementSibling;
+      if (!input) return;
+      if (input.type === 'password') {
+        input.type = 'text';
+        if (btn) btn.textContent = 'Hide';
+      } else {
+        input.type = 'password';
+        if (btn) btn.textContent = 'Show';
+      }
+    };
+
+        window.toggleUserPassword = () => {
+      const input = document.getElementById('user-password');
+      const btn = input?.nextElementSibling;
+      if (!input) return;
+      if (input.type === 'text') {
+        input.type = 'password';
+        if (btn) btn.textContent = 'Show';
+      } else {
+        input.type = 'text';
+        if (btn) btn.textContent = 'Hide';
+      }
+    };
+
+        window.forceLogoutAdmin = async () => {
+      if (!confirm('Force logout everyone signed in as Admin? They will need to sign in again.')) return;
+      try {
+        await api('/api/admin/force-logout', { method: 'POST' });
+        toast('Admin sessions ended — signing you out', 'success');
+        setTimeout(() => logout(), 600);
+      } catch (e) { toast(e.message, 'error'); }
+    };
+
+        window.editUser = (id) => {
+      const u = (state.data.users || []).find(x => x.id === id);
+      if (!u) { toast('User not found', 'error'); return; }
+      state.modal = { type: 'editUser', data: u };
+      render();
+    };
+
+        window.deleteUser = async (id) => {
+      if (!confirm('Remove this user?')) return;
+      try {
+        await api('/api/users/' + id, { method: 'DELETE' });
+        toast('User removed', 'success');
+        loadViewData();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+
+        window.deleteVehicle = async (id) => {
+      if (!confirm('Delete this vehicle?')) return;
+      try {
+        await api('/api/vehicles/' + id, { method: 'DELETE' });
+        toast('Vehicle deleted', 'success');
+        loadViewData();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+
+        window.deleteFuel = async (id) => {
+      const f = findFuel(id);
+      if (!f) return;
+      if (!confirm('Delete fuel entry ' + (f.ref || '') + '?')) return;
+      try {
+        await api('/api/fuel/' + id, { method: 'DELETE' });
+        toast('Fuel entry deleted', 'success');
+        state.modal = null;
+        loadViewData();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+
+    window.exportFuelPdf = async (id) => {
+      const f = findFuel(id);
+      if (!f) return;
+      if (!window.jspdf) { toast('PDF library still loading', 'error'); return; }
+      try {
+        toast('Building PDF…');
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+        const margin = 16;
+        let y = await drawCompanyPdfHeader(doc, 'Fuel Log Entry');
+
+        // Ref + date
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(16);
+        doc.setTextColor(15, 23, 42);
+        doc.text(String(f.ref || 'Fuel'), margin, y);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(100, 116, 139);
+        doc.text(new Date(f.dateTime).toLocaleString(), 194, y, { align: 'right' });
+        y += 10;
+
+        y = pdfSectionTitle(doc, 'Vehicle & fill-up', y, margin);
+        y = pdfKV(doc, 'Vehicle', f.vehicle + (f.registration ? '  ·  ' + f.registration : ''), y, margin, 178);
+        y = pdfKV(doc, 'Odometer', f.odometer != null ? f.odometer + ' km' : '—', y, margin, 178);
+        y = pdfKV(doc, 'Fuel type', f.fuelType, y, margin, 178);
+        y = pdfKV(doc, 'Litres', f.litres != null ? String(f.litres) : '—', y, margin, 178);
+        y = pdfKV(doc, 'Amount', f.amount != null ? 'R ' + Number(f.amount).toFixed(2) : '—', y, margin, 178);
+        const ppl = (f.amount && f.litres) ? (Number(f.amount) / Number(f.litres)) : null;
+        y = pdfKV(doc, 'Price / litre', ppl != null ? 'R ' + ppl.toFixed(2) : '—', y, margin, 178);
+        y = pdfKV(doc, 'Payment', f.paymentMethod, y, margin, 178);
+        y += 2;
+
+        y = pdfSectionTitle(doc, 'Details', y, margin);
+        y = pdfKV(doc, 'Station', f.station, y, margin, 178);
+        y = pdfKV(doc, 'Driver', f.driver, y, margin, 178);
+        y = pdfKV(doc, 'Notes', f.notes, y, margin, 178);
+        y += 3;
+
+        if (f.receiptData || f.receipt) {
+          y = pdfSectionTitle(doc, 'Receipt', y, margin);
+          try {
+            const img = f.receiptData || await loadImageAsDataUrl(f.receipt.startsWith('http') ? f.receipt : (window.location.origin + f.receipt));
+            const props = doc.getImageProperties(img);
+            let w = 90, h = (props.height * w) / props.width;
+            if (h > 70) { h = 70; w = (props.width * h) / props.height; }
+            y = pdfEnsureSpace(doc, y, h + 6, margin);
+            doc.setDrawColor(226, 232, 240);
+            doc.roundedRect(margin - 1, y - 1, w + 2, h + 2, 1.5, 1.5, 'D');
+            doc.addImage(img, img.indexOf('jpeg') >= 0 ? 'JPEG' : 'PNG', margin, y, w, h);
+            y += h + 6;
+          } catch (e) {
+            y = pdfBodyText(doc, 'Receipt could not be embedded', y, margin, 9);
+          }
+        }
+
+        pdfFooter(doc);
+        doc.save((f.ref || 'fuel') + '.pdf');
+        toast('PDF downloaded', 'success');
+      } catch (e) {
+        console.error(e);
+        toast(e.message || 'PDF failed', 'error');
+      }
+    };
+
+    window.setFuelMonth = (key) => {
+      state.fuelMonth = key;
+      render();
+    };
+
+    window.exportFuelMonthPdf = async (monthKey) => {
+      if (!window.jspdf) { toast('PDF library still loading', 'error'); return; }
+      const list = state.data.fuel || [];
+      const key = monthKey || state.fuelMonth || new Date().toISOString().slice(0, 7);
+      const [yStr, mStr] = String(key).split('-');
+      const y = Number(yStr);
+      const m = Number(mStr) - 1;
+      const monthName = new Date(y, m, 1).toLocaleString(undefined, { month: 'long', year: 'numeric' });
+      const entries = list.filter(f => {
+        const d = new Date(f.dateTime);
+        return d.getFullYear() === y && d.getMonth() === m;
+      });
+      try {
+        toast('Building report…');
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+        const margin = 16;
+        let yy = await drawCompanyPdfHeader(doc, 'Monthly Fuel Report');
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(16);
+        doc.setTextColor(15, 23, 42);
+        doc.text(monthName, margin, yy);
+        yy += 6;
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(100, 116, 139);
+        doc.text(entries.length + ' fill-up' + (entries.length === 1 ? '' : 's'), margin, yy);
+        yy += 8;
+
+        const totalAmt = entries.reduce((s, f) => s + (Number(f.amount) || 0), 0);
+        const totalL = entries.reduce((s, f) => s + (Number(f.litres) || 0), 0);
+        const avg = totalL > 0 ? totalAmt / totalL : null;
+
+        // Summary card
+        doc.setFillColor(248, 250, 252);
+        doc.setDrawColor(226, 232, 240);
+        doc.roundedRect(margin, yy - 2, 178, 18, 2, 2, 'FD');
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(11);
+        doc.setTextColor(30, 64, 175);
+        doc.text('Total  R ' + totalAmt.toFixed(2), margin + 6, yy + 6);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(9);
+        doc.setTextColor(51, 65, 85);
+        doc.text(totalL.toFixed(1) + ' L' + (avg != null ? '   ·   Avg R ' + avg.toFixed(2) + '/L' : ''), margin + 6, yy + 12);
+        yy += 24;
+
+        if (entries.length === 0) {
+          yy = pdfBodyText(doc, 'No fuel logs for this month.', yy, margin, 10);
+        } else {
+          entries.forEach((f, i) => {
+            yy = pdfEnsureSpace(doc, yy, 22, margin);
+            doc.setDrawColor(226, 232, 240);
+            doc.line(margin, yy - 2, 194, yy - 2);
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(9.5);
+            doc.setTextColor(15, 23, 42);
+            doc.text((f.ref || ('#' + (i + 1))) + '  ·  ' + new Date(f.dateTime).toLocaleString(), margin, yy + 2);
+            yy += 6;
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(8.5);
+            doc.setTextColor(51, 65, 85);
+            const line = (f.vehicle || '') + (f.registration ? ' (' + f.registration + ')' : '') +
+              '  ·  ' + (f.litres != null ? f.litres : '—') + ' L  ·  R ' + (f.amount != null ? Number(f.amount).toFixed(2) : '—') +
+              (f.paymentMethod ? '  ·  ' + f.paymentMethod : '') +
+              (f.station ? '  ·  ' + f.station : '') +
+              (f.driver ? '  ·  ' + f.driver : '');
+            const lines = doc.splitTextToSize(line, 178);
+            doc.text(lines, margin, yy);
+            yy += lines.length * 4 + 6;
+          });
+        }
+
+        pdfFooter(doc);
+        doc.save('fuel-report-' + y + '-' + String(m + 1).padStart(2, '0') + '.pdf');
+        toast('Monthly fuel report downloaded', 'success');
+      } catch (e) {
+        console.error(e);
+        toast(e.message || 'Report failed', 'error');
+      }
+    };
+
+    window.deleteJobPhoto = async (photoId) => {
+      if (!state.selectedJob || !photoId) return;
+      if (!confirm('Remove this photo?')) return;
+      try {
+        state.selectedJob = await api('/api/jobs/' + state.selectedJob.id + '/delete-photo', {
+          method: 'PUT',
+          body: { photoId }
+        });
+        toast('Photo removed', 'success');
+        render();
+      } catch (err) {
+        toast((err && err.message) ? err.message : 'Could not remove photo', 'error');
+      }
+    };
+
+    window.uploadJobPhoto = async (e) => {
+      const input = e.target;
+      const file = input.files && input.files[0];
+      if (!file) {
+        toast('No photo selected', 'error');
+        return;
+      }
+      if (!state.selectedJob || !state.selectedJob.id) {
+        toast('Open a job card first', 'error');
+        return;
+      }
+      try {
+        const sizeMb = (file.size / 1048576).toFixed(1);
+        toast('Processing photo (' + sizeMb + ' MB)…');
+        // Always resize — phone cameras are too large for raw upload
+        const imageData = await resizeImageForUpload(file);
+        toast('Uploading…');
+        const updated = await api('/api/jobs/' + state.selectedJob.id + '/photo', {
+          method: 'PUT',
+          body: { imageData: imageData, type: 'completion' }
+        });
+        if (!updated || !updated.id) throw new Error('Server did not return the job');
+        state.selectedJob = updated;
+        toast('Photo uploaded', 'success');
+        render();
+      } catch (err) {
+        console.error('uploadJobPhoto', err);
+        toast((err && err.message) ? err.message : 'Photo upload failed', 'error');
+      } finally {
+        try { input.value = ''; } catch (_) {}
+      }
+    };
+
+    function resizeImageForUpload(file) {
+      return new Promise(function(resolve, reject) {
+        var url = URL.createObjectURL(file);
+        var img = new Image();
+        var done = false;
+        var timer = setTimeout(function() {
+          if (done) return;
+          done = true;
+          URL.revokeObjectURL(url);
+          // last resort: raw base64 (may fail if huge)
+          fileToBase64(file).then(resolve).catch(reject);
+        }, 15000);
+        img.onload = function() {
+          if (done) return;
+          try {
+            var maxSide = 1200;
+            var w = img.naturalWidth || img.width || 1;
+            var h = img.naturalHeight || img.height || 1;
+            if (w > maxSide || h > maxSide) {
+              var scale = maxSide / Math.max(w, h);
+              w = Math.max(1, Math.round(w * scale));
+              h = Math.max(1, Math.round(h * scale));
+            }
+            var c = document.createElement('canvas');
+            c.width = w;
+            c.height = h;
+            var ctx = c.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, w, h);
+            ctx.drawImage(img, 0, 0, w, h);
+            var data = c.toDataURL('image/jpeg', 0.7);
+            done = true;
+            clearTimeout(timer);
+            URL.revokeObjectURL(url);
+            if (!data || data.length < 50) reject(new Error('Could not process image'));
+            else resolve(data);
+          } catch (err) {
+            done = true;
+            clearTimeout(timer);
+            URL.revokeObjectURL(url);
+            reject(err);
+          }
+        };
+        img.onerror = function() {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          URL.revokeObjectURL(url);
+          fileToBase64(file).then(resolve).catch(function() {
+            reject(new Error('This image format is not supported. Try a different photo.'));
+          });
+        };
+        img.src = url;
+      });
+    }
+
+    window.updateTaskStatus = async (id, status) => {
+      try {
+        await api('/api/tasks/' + id, { method: 'PUT', body: { status } });
+        state.selectedJob = await api('/api/jobs/' + state.selectedJob.id);
+        toast('Task updated', 'success');
+        render();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+
+    window.closeJob = async () => {
+      try {
+        state.selectedJob = await api('/api/jobs/' + state.selectedJob.id + '/close', { method: 'PUT' });
+        toast('Job card closed', 'success');
+        render();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+
+    window.reopenJob = async () => {
+      const j = state.selectedJob;
+      if (!j) return;
+      if (!confirm('Reopen job card ' + j.jobNumber + '?')) return;
+      try {
+        state.selectedJob = await api('/api/jobs/' + j.id, { method: 'PUT', body: { status: 'open' } });
+        toast('Job card reopened', 'success');
+        render();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+
+        window.deleteJob = async () => {
+      const j = state.selectedJob;
+      if (!j) return;
+      if (!confirm('Delete job card ' + j.jobNumber + '? This cannot be undone.')) return;
+      try {
+        await api('/api/jobs/' + j.id, { method: 'DELETE' });
+        toast('Job card deleted', 'success');
+        state.selectedJob = null;
+        state.view = 'jobs';
+        loadViewData();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+
+    window.deleteDelivery = async (id) => {
+      const d = findDelivery(id);
+      if (!d) return;
+      if (!confirm('Delete ' + d.type + ' ' + d.ref + '? This cannot be undone.')) return;
+      try {
+        await api('/api/deliveries/' + id, { method: 'DELETE' });
+        toast('Record deleted', 'success');
+        state.modal = null;
+        loadViewData();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+
+    window.exportDeliveryPdf = async (id) => {
+      const d = (state.data.deliveries || []).find(x => x.id === id);
+      if (!d) { toast('Record not found', 'error'); return; }
+      if (!window.jspdf) { toast('PDF library still loading', 'error'); return; }
+      try {
+        toast('Building PDF…');
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+        const margin = 16;
+        const isCollection = d.type === 'collection';
+        const heading = isCollection ? 'Collection Note' : 'Delivery Note';
+
+        let y = await drawCompanyPdfHeader(doc, heading);
+
+        // Ref + status
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(16);
+        doc.setTextColor(15, 23, 42);
+        doc.text(String(d.ref || ''), margin, y);
+        const st = String(d.status || '—').toUpperCase();
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'bold');
+        if (d.status === 'completed' || d.status === 'delivered') doc.setFillColor(209, 250, 229);
+        else doc.setFillColor(219, 234, 254);
+        const stW = doc.getTextWidth(st) + 8;
+        doc.roundedRect(margin + doc.getTextWidth(String(d.ref || '')) + 6, y - 5, stW, 7, 2, 2, 'F');
+        doc.setTextColor(d.status === 'completed' || d.status === 'delivered' ? 6 : 30, d.status === 'completed' || d.status === 'delivered' ? 95 : 64, d.status === 'completed' || d.status === 'delivered' ? 70 : 175);
+        doc.text(st, margin + doc.getTextWidth(String(d.ref || '')) + 10, y);
+        y += 10;
+
+        y = pdfSectionTitle(doc, 'Details', y, margin);
+        y = pdfKV(doc, 'Type', isCollection ? 'Collection' : 'Delivery', y, margin, 178);
+        y = pdfKV(doc, 'Date & time', new Date(d.dateTime).toLocaleString(), y, margin, 178);
+        y = pdfKV(doc, 'Customer', d.customerName, y, margin, 178);
+        y = pdfKV(doc, 'Site address', d.site, y, margin, 178);
+        y = pdfKV(doc, isCollection ? 'Collected by' : 'Delivered by', d.driver, y, margin, 178);
+        y += 2;
+
+        y = pdfSectionTitle(doc, 'Item / package', y, margin);
+        y = pdfBodyText(doc, d.itemDetails || '—', y, margin, 10);
+        if (d.notes) {
+          y += 2;
+          doc.setFont('helvetica', 'italic');
+          doc.setFontSize(8.5);
+          doc.setTextColor(100, 116, 139);
+          const nlines = doc.splitTextToSize('Notes: ' + d.notes, 178);
+          y = pdfEnsureSpace(doc, y, nlines.length * 4 + 2, margin);
+          doc.text(nlines, margin, y);
+          y += nlines.length * 4 + 2;
+        }
+        y += 6;
+
+        // Sign-off block
+        y = pdfEnsureSpace(doc, y, 40, margin);
+        y = pdfSectionTitle(doc, isCollection ? 'Handed over by' : 'Received by', y, margin);
+        if (d.signature && (d.signature.data || d.signature.path)) {
+          try {
+            const img = d.signature.data || await loadImageAsDataUrl(d.signature.path.startsWith('http') ? d.signature.path : (window.location.origin + d.signature.path));
+            const sp = doc.getImageProperties(img);
+            let sw = 60, sh = (sp.height * sw) / sp.width;
+            if (sh > 24) { sh = 24; sw = (sp.width * sh) / sp.height; }
+            y = pdfEnsureSpace(doc, y, sh + 14, margin);
+            doc.addImage(img, img.indexOf('jpeg') >= 0 ? 'JPEG' : 'PNG', margin, y, sw, sh);
+            y += sh + 4;
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(9);
+            doc.setTextColor(15, 23, 42);
+            doc.text(String(d.signature.signedBy || ''), margin, y);
+            doc.setFontSize(8);
+            doc.setTextColor(100, 116, 139);
+            doc.text(new Date(d.signature.signedAt).toLocaleString(), 120, y);
+            y += 4;
+          } catch (e) {
+            doc.setFontSize(9);
+            doc.setTextColor(100, 116, 139);
+            doc.text('Signature on file', margin, y);
+            y += 6;
+          }
+        } else {
+          y += 12;
+          doc.setDrawColor(203, 213, 225);
+          doc.setLineWidth(0.4);
+          doc.line(margin, y, 100, y);
+          doc.line(120, y, 194, y);
+          y += 5;
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(8);
+          doc.setTextColor(100, 116, 139);
+          doc.text('Name & signature', margin, y);
+          doc.text('Date', 120, y);
+        }
+
+        pdfFooter(doc);
+        doc.save((d.ref || 'delivery') + '.pdf');
+        toast('PDF downloaded', 'success');
+      } catch (e) {
+        console.error(e);
+        toast(e.message || 'PDF export failed', 'error');
+      }
+    };
+
+    async function drawCompanyPdfHeader(doc, subtitle) {
+      const margin = 16;
+      let banner = null;
+      try {
+        banner = await loadImageAsDataUrl(window.location.origin + '/header-banner.jpg');
+      } catch (e) {
+        try { banner = await loadImageAsDataUrl('/header-banner.jpg'); } catch (_) {}
+      }
+
+      if (banner) {
+        try {
+          const props = doc.getImageProperties(banner);
+          // Full-width banner, preserve aspect
+          const bannerW = 210;
+          const bannerH = Math.min(32, (props.height * bannerW) / props.width);
+          const fmt = banner.indexOf('image/jpeg') >= 0 || banner.indexOf('image/jpg') >= 0 ? 'JPEG' : 'PNG';
+          doc.addImage(banner, fmt, 0, 0, bannerW, bannerH);
+          doc.setFillColor(37, 99, 235);
+          doc.rect(0, bannerH, 210, 1.5, 'F');
+          return bannerH + 8;
+        } catch (e) {
+          console.warn('banner embed failed', e);
+        }
+      }
+
+      // Fallback text header
+      doc.setFillColor(239, 246, 255);
+      doc.rect(0, 0, 210, 28, 'F');
+      doc.setFillColor(37, 99, 235);
+      doc.rect(0, 27, 210, 1.5, 'F');
+      doc.setTextColor(30, 64, 175);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(14);
+      doc.text('Contact Computers', margin, 14);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139);
+      doc.text("How I.T's Done", margin, 20);
+      doc.setFontSize(8);
+      doc.text(String(subtitle || ''), 194, 14, { align: 'right' });
+      return 36;
+    }
+
+    function pdfEnsureSpace(doc, y, need, margin) {
+      if (y + need > 278) {
+        doc.addPage();
+        // thin top accent on continuation pages
+        doc.setFillColor(37, 99, 235);
+        doc.rect(0, 0, 210, 1.2, 'F');
+        return 16;
+      }
+      return y;
+    }
+
+    function pdfSectionTitle(doc, title, y, margin) {
+      y = pdfEnsureSpace(doc, y, 12, margin);
+      doc.setFillColor(37, 99, 235);
+      doc.roundedRect(margin, y - 4, 2.2, 6, 0.5, 0.5, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      doc.setTextColor(30, 41, 59);
+      doc.text(title, margin + 5, y);
+      return y + 7;
+    }
+
+    function pdfKV(doc, label, value, y, margin, colWidth) {
+      const labelW = 38;
+      const val = String(value == null || value === '' ? '—' : value);
+      const lines = doc.splitTextToSize(val, colWidth - labelW - 2);
+      const h = Math.max(5, lines.length * 4.2);
+      y = pdfEnsureSpace(doc, y, h + 1, margin);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(100, 116, 139);
+      doc.text(label, margin, y);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9.5);
+      doc.setTextColor(15, 23, 42);
+      doc.text(lines, margin + labelW, y);
+      return y + h;
+    }
+
+    function pdfBodyText(doc, text, y, margin, size) {
+      size = size || 9.5;
+      const lines = doc.splitTextToSize(String(text || '—'), 178);
+      const h = lines.length * (size * 0.42) + 1;
+      y = pdfEnsureSpace(doc, y, h, margin);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(size);
+      doc.setTextColor(30, 41, 59);
+      doc.text(lines, margin, y);
+      return y + h;
+    }
+
+    function pdfFooter(doc) {
+      const pages = doc.internal.getNumberOfPages();
+      for (let i = 1; i <= pages; i++) {
+        doc.setPage(i);
+        doc.setDrawColor(226, 232, 240);
+        doc.setLineWidth(0.3);
+        doc.line(16, 287, 194, 287);
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.5);
+        doc.setTextColor(148, 163, 184);
+        doc.text('Contact Computers  ·  JobCard Ops  ·  ' + new Date().toLocaleString(), 16, 292);
+        doc.text('Page ' + i + ' of ' + pages, 194, 292, { align: 'right' });
+      }
+    }
+
+    window.exportJobPdf = async () => {
+      const j = state.selectedJob;
+      if (!j) return;
+      if (!window.jspdf) {
+        toast('PDF library still loading — try again in a second', 'error');
+        return;
+      }
+      try {
+        toast('Building PDF…');
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+        const margin = 16;
+        let y = await drawCompanyPdfHeader(doc, 'Job Card');
+
+        // Job number + status (no overlap)
+        const jobNo = String(j.jobNumber || 'Job');
+        const status = String(j.status || 'open').replace('_', ' ');
+        const priority = String(j.priority || 'normal');
+        const st = status.toUpperCase();
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(18);
+        doc.setTextColor(15, 23, 42);
+        doc.text(jobNo, margin, y);
+        const jobNoW = doc.getTextWidth(jobNo); // measure at size 18
+
+        doc.setFontSize(8);
+        const stW = doc.getTextWidth(st) + 8;
+        const pillX = margin + jobNoW + 6;
+        if (status === 'closed') doc.setFillColor(209, 250, 229);
+        else doc.setFillColor(219, 234, 254);
+        doc.roundedRect(pillX, y - 5, stW, 7, 2, 2, 'F');
+        if (status === 'closed') doc.setTextColor(6, 95, 70);
+        else doc.setTextColor(30, 64, 175);
+        doc.setFont('helvetica', 'bold');
+        doc.text(st, pillX + 4, y);
+
+        doc.setTextColor(100, 116, 139);
+        doc.setFont('helvetica', 'normal');
+        doc.text('Priority: ' + priority, 194, y, { align: 'right' });
+        y += 8;
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(10);
+        doc.setTextColor(30, 64, 175);
+        doc.text('Work carried out on behalf of:', margin, y);
+        y += 5;
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(10);
+        doc.setTextColor(15, 23, 42);
+        const behalf = (j.customerName || '—') + (j.siteLocation ? '  ·  ' + j.siteLocation : '');
+        const behalfLines = doc.splitTextToSize(behalf, 178);
+        doc.text(behalfLines, margin, y);
+        y += behalfLines.length * 5 + 4;
+
+        // Info card background
+        const infoTop = y;
+        const infoLines = [
+          ['Customer', j.customerName],
+          ['Site', j.siteLocation],
+          ['Start', j.startDate || '—'],
+          ['Complete', j.completionDate || '—'],
+          ['Vehicle', j.vehicle],
+          ['Technician', j.technician]
+        ];
+        // measure height roughly
+        let cardH = 8 + infoLines.length * 6;
+        doc.setFillColor(248, 250, 252);
+        doc.setDrawColor(226, 232, 240);
+        doc.roundedRect(margin, y - 2, 178, cardH, 2, 2, 'FD');
+        y += 4;
+        // two-column layout
+        for (let i = 0; i < infoLines.length; i += 2) {
+          const left = infoLines[i];
+          const right = infoLines[i + 1];
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(7.5);
+          doc.setTextColor(100, 116, 139);
+          doc.text(left[0].toUpperCase(), margin + 4, y);
+          if (right) doc.text(right[0].toUpperCase(), margin + 92, y);
+          y += 4;
+          doc.setFontSize(9.5);
+          doc.setTextColor(15, 23, 42);
+          doc.text(doc.splitTextToSize(String(left[1] || '—'), 80), margin + 4, y);
+          if (right) doc.text(doc.splitTextToSize(String(right[1] || '—'), 80), margin + 92, y);
+          y += 7;
+        }
+        y += 4;
+
+        // Description
+        y = pdfSectionTitle(doc, 'Description', y, margin);
+        y = pdfBodyText(doc, j.description || '—', y, margin);
+        if (j.notes) {
+          y += 2;
+          doc.setFont('helvetica', 'italic');
+          doc.setFontSize(8.5);
+          doc.setTextColor(100, 116, 139);
+          const nlines = doc.splitTextToSize('Notes: ' + j.notes, 178);
+          y = pdfEnsureSpace(doc, y, nlines.length * 4 + 2, margin);
+          doc.text(nlines, margin, y);
+          y += nlines.length * 4 + 2;
+        }
+        y += 3;
+
+        // Job Scope
+        y = pdfSectionTitle(doc, 'Job Scope', y, margin);
+        y = pdfKV(doc, 'Work carried out', j.workCarriedOut, y, margin, 178);
+        y = pdfKV(doc, 'Time in', j.timeIn, y, margin, 178);
+        y = pdfKV(doc, 'Time out', j.timeOut, y, margin, 178);
+        const spent = hoursSpentFromTimes(j.timeIn, j.timeOut);
+        y = pdfKV(doc, 'Time spent', spent ? spent.label : '—', y, margin, 178);
+        y = pdfKV(doc, 'Equipment / Spares', j.equipmentSpares, y, margin, 178);
+        y = pdfKV(doc, 'Comments', j.scopeComments, y, margin, 178);
+        const ratingTxt = j.jobRating != null ? (String(j.jobRating) + ' / 5') : '—';
+        const invTxt = j.hasInvoice ? ('Yes' + (j.invoiceNumber ? '  ·  #' + j.invoiceNumber : '')) : 'No';
+        y = pdfKV(doc, 'Rating', ratingTxt, y, margin, 178);
+        y = pdfKV(doc, 'Invoice', invTxt, y, margin, 178);
+        y += 3;
+
+        // Tasks
+        y = pdfSectionTitle(doc, 'Tasks', y, margin);
+        const tasks = j.tasks || [];
+        if (tasks.length === 0) {
+          y = pdfBodyText(doc, 'No tasks', y, margin, 9);
+        } else {
+          tasks.forEach((t, i) => {
+            const row = (i + 1) + '. ' + (t.title || 'Task') + '   [' + (t.status || '') + ']' + (t.dueDate ? '   Due: ' + t.dueDate : '');
+            y = pdfBodyText(doc, row, y, margin, 9);
+          });
+        }
+        y += 3;
+
+        // Signature
+        y = pdfSectionTitle(doc, 'Customer sign-off', y, margin);
+        if (j.signature && (j.signature.data || j.signature.path)) {
+          try {
+            const img = j.signature.data || await loadImageAsDataUrl(j.signature.path.startsWith('http') ? j.signature.path : (window.location.origin + j.signature.path));
+            const sp = doc.getImageProperties(img);
+            let sw = 65, sh = (sp.height * sw) / sp.width;
+            if (sh > 28) { sh = 28; sw = (sp.width * sh) / sp.height; }
+            y = pdfEnsureSpace(doc, y, sh + 14, margin);
+            doc.setFillColor(255, 255, 255);
+            doc.setDrawColor(203, 213, 225);
+            doc.roundedRect(margin, y - 2, sw + 8, sh + 6, 2, 2, 'D');
+            doc.addImage(img, img.indexOf('image/jpeg') >= 0 ? 'JPEG' : 'PNG', margin + 4, y, sw, sh);
+            y += sh + 8;
+            doc.setFontSize(8);
+            doc.setTextColor(100, 116, 139);
+            doc.text('Signed by: ' + (j.signature.signedBy || 'Customer') + '  ·  ' + new Date(j.signature.signedAt).toLocaleString(), margin, y);
+            y += 6;
+          } catch {
+            y = pdfBodyText(doc, 'Signature on file', y, margin, 9);
+          }
+        } else {
+          y = pdfBodyText(doc, 'No signature captured', y, margin, 9);
+        }
+        y += 3;
+
+        // Photos
+        const photos = j.photos || [];
+        y = pdfSectionTitle(doc, 'Photos (' + photos.length + ')', y, margin);
+        if (photos.length === 0) {
+          y = pdfBodyText(doc, 'No photos attached', y, margin, 9);
+        } else {
+          for (let i = 0; i < photos.length; i++) {
+            const ph = photos[i];
+            try {
+              const imgData = ph.data || await loadImageAsDataUrl(ph.path.startsWith('http') ? ph.path : (window.location.origin + ph.path));
+              const format = imgData.indexOf('image/jpeg') >= 0 ? 'JPEG' : 'PNG';
+              const maxW = 178, maxH = 72;
+              const props = doc.getImageProperties(imgData);
+              let w = maxW, h = (props.height * maxW) / props.width;
+              if (h > maxH) { h = maxH; w = (props.width * maxH) / props.height; }
+              y = pdfEnsureSpace(doc, y, h + 12, margin);
+              doc.setDrawColor(226, 232, 240);
+              doc.roundedRect(margin - 1, y - 1, w + 2, h + 2, 1.5, 1.5, 'D');
+              doc.addImage(imgData, format, margin, y, w, h);
+              y += h + 4;
+              doc.setFontSize(7.5);
+              doc.setTextColor(148, 163, 184);
+              doc.text((ph.type || 'Photo') + (ph.uploadedAt ? '  ·  ' + new Date(ph.uploadedAt).toLocaleString() : ''), margin, y);
+              y += 7;
+            } catch (err) {
+              console.warn('Photo embed failed', ph.path, err);
+              y = pdfBodyText(doc, 'Photo ' + (i + 1) + ' could not be embedded', y, margin, 9);
+            }
+          }
+        }
+
+        pdfFooter(doc);
+        doc.save((j.jobNumber || 'job') + '.pdf');
+        toast('PDF downloaded', 'success');
+      } catch (e) {
+        console.error(e);
+        toast(e.message || 'PDF export failed', 'error');
+      }
+    };
+
+
+    function loadImageAsDataUrl(url) {
+      return new Promise((resolve, reject) => {
+        // Prefer fetch so same-origin uploads work reliably
+        fetch(url, { credentials: 'same-origin' })
+          .then(r => {
+            if (!r.ok) throw new Error('Image fetch failed');
+            return r.blob();
+          })
+          .then(blob => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              // Re-encode via canvas to a reasonable JPEG size for PDF
+              const img = new Image();
+              img.onload = () => {
+                try {
+                  const maxSide = 1200;
+                  let w = img.width;
+                  let h = img.height;
+                  if (w > maxSide || h > maxSide) {
+                    const scale = maxSide / Math.max(w, h);
+                    w = Math.round(w * scale);
+                    h = Math.round(h * scale);
+                  }
+                  const c = document.createElement('canvas');
+                  c.width = w;
+                  c.height = h;
+                  const ctx = c.getContext('2d');
+                  ctx.fillStyle = '#ffffff';
+                  ctx.fillRect(0, 0, w, h);
+                  ctx.drawImage(img, 0, 0, w, h);
+                  resolve(c.toDataURL('image/jpeg', 0.85));
+                } catch (err) {
+                  reject(err);
+                }
+              };
+              img.onerror = reject;
+              img.src = reader.result;
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          })
+          .catch(() => {
+            // Fallback: direct Image load
+            const img = new Image();
+            img.onload = () => {
+              try {
+                const c = document.createElement('canvas');
+                c.width = img.width;
+                c.height = img.height;
+                c.getContext('2d').drawImage(img, 0, 0);
+                resolve(c.toDataURL('image/jpeg', 0.85));
+              } catch (err) {
+                reject(err);
+              }
+            };
+            img.onerror = reject;
+            img.src = url;
+          });
+      });
+    }
+
+
+    window.doImportCustomers = async () => {
+
+      const text = document.getElementById('import-csv').value.trim();
+      if (!text) return;
+      const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+      if (lines.length < 2) { toast('Need header + data', 'error'); return; }
+      const headers = lines[0].split(',').map(h => h.trim());
+      const customers = lines.slice(1).map(line => {
+        const vals = line.split(',').map(v => v.trim());
+        const obj = {};
+        headers.forEach((h, i) => obj[h] = vals[i] || '');
+        return obj;
+      });
+      try {
+        const res = await api('/api/customers/import', { method: 'POST', body: { customers } });
+        toast(`Imported ${res.imported} customers`, 'success');
+        state.modal = null;
+        loadViewData();
+      } catch (e) { toast(e.message, 'error'); }
+    };
+
+    function fileToBase64(file) {
+      return new Promise((res, rej) => {
+        const reader = new FileReader();
+        reader.onload = () => res(reader.result);
+        reader.onerror = rej;
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function debounce(fn, ms) {
+      let t;
+      return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+    }
+
+    async function loadViewData() {
+      try {
+        if (state.view === 'dashboard') {
+          state.data.dashboard = await api('/api/dashboard');
+        } else if (state.view === 'jobs') {
+          const q = state.filters.jobQ ? '?q=' + encodeURIComponent(state.filters.jobQ) : '';
+          state.data.jobs = await api('/api/jobs' + q);
+        } else if (state.view === 'calendar') {
+          state.data.tasks = await api('/api/tasks');
+        } else if (state.view === 'customers') {
+          const q = state.filters.custQ ? '?q=' + encodeURIComponent(state.filters.custQ) : '';
+          state.data.customers = await api('/api/customers' + q);
+        } else if (state.view === 'deliveries') {
+          state.data.deliveries = await api('/api/deliveries');
+        } else if (state.view === 'fuel') {
+          state.data.fuel = await api('/api/fuel');
+          state.data.vehicles = await api('/api/vehicles');
+        } else if (state.view === 'users') {
+          state.data.users = await api('/api/users');
+          state.data.vehicles = await api('/api/vehicles');
+        } else if (state.view === 'audit') {
+          state.data.audit = await api('/api/audit');
+        }
+        // always keep customers for job form
+        if (!state.data.customers) state.data.customers = await api('/api/customers');
+        render();
+      } catch (e) {
+        toast(e.message, 'error');
+      }
+    }
+
+    // PWA: drop old caches, register new SW
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', async () => {
+        try {
+          if ('caches' in window) {
+            const keys = await caches.keys();
+            await Promise.all(keys.map(k => caches.delete(k)));
+          }
+          const regs = await navigator.serviceWorker.getRegistrations();
+          for (const r of regs) await r.unregister();
+          await navigator.serviceWorker.register('/sw.js?v=3');
+        } catch (e) {}
+      });
+    }
+
+    // boot
+    init().then(() => {
+      if (state.user) loadViewData();
+    });
+  </script>
+
+</body>
+</html>
+
